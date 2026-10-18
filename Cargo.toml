@@ -1,0 +1,37 @@
+[package]
+name = "hench-cli"
+version = "0.2.0"
+edition = "2021"
+description = "Hench worker for desktops: paid yt-dlp media downloads over ContextVM (MCP over Nostr), with a web dashboard"
+license = "MIT"
+
+[dependencies]
+# Vendored from github.com/nostr-net/rs-sdk @ 2cf7e6c (MIT, see vendor/LICENSE).
+# Neither crates.io contextvm-sdk 0.2.2 (no payments module) nor a git dep
+# (repo's submodule gitlinks have no .gitmodules; cargo refuses) works from a
+# public checkout. Vendor diff vs upstream rev: lru 0.12 -> 0.18; ported to
+# nostr/nostr-sdk 0.45 (signer is ContextVmSigner; NostrSigner removed upstream).
+contextvm-sdk = { path = "vendor/contextvm-sdk" }
+# nostr 0.45 keeps per-NIP features on `nostr` itself (only nostr-sdk dropped
+# them); NWC needs nip04/nip47 which are cfg-gated off by default.
+nostr = { version = "0.45", features = ["nip04", "nip47"] }
+nostr-sdk = "0.45"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+futures = "0.3"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+axum = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "json"] }
+sha2 = "0.11"
+hex = "0.4"
+base64 = "0.23"
+url = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+strip = true

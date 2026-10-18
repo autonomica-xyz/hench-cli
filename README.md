@@ -2,19 +2,28 @@
 
 **Turn any computer into a Hench worker that earns sats.**
 
-The desktop version of [Hench](../hench): a ContextVM worker that offers paid
-media downloads (yt-dlp → Blossom) over Nostr. Same wire behavior as the
+The desktop version of [Hench](https://github.com/autonomica-xyz/hench) — part
+of [autonomica.xyz](https://autonomica.xyz): a ContextVM worker that offers
+paid media downloads (yt-dlp → Blossom) over Nostr. Same wire behavior as the
 Android app — announcements with the `agent=hench` tag (so the
-[hench-web](../hench-web) dashboard discovers it), CEP-8 payment gating,
-`payment_required` → pay → `payment_accepted` → job runs — but driven by the
-native [rs-sdk](../rs-sdk) instead of the uniffi FFI, with your own wallet
-over NWC instead of an on-device Spark wallet, plus a built-in web dashboard
-for management.
+[hench-web](https://github.com/autonomica-xyz/hench-web) dashboard discovers
+it), CEP-8 payment gating, `payment_required` → pay → `payment_accepted` →
+job runs — but driven by the native rs-sdk instead of the uniffi FFI, with
+your own wallet over NWC instead of an on-device Spark wallet, plus a
+built-in web dashboard for management.
+
+The SDK is vendored under `vendor/contextvm-sdk` (from
+[nostr-net/rs-sdk](https://github.com/nostr-net/rs-sdk) @ `2cf7e6c`, MIT):
+the crates.io `contextvm-sdk` 0.2.2 has no payments module and the repo's
+submodule layout breaks `cargo`'s git-fetch, so a vendored path dep is the
+only reproducible public checkout. Vendored changes update lru to 0.18 and
+nostr to 0.45, preserve the upstream canonical invocation vectors, and retain
+the SDK's regression tests.
 
 ## Run
 
 ```bash
-# needs: rust toolchain, yt-dlp on PATH
+# needs: rust toolchain, yt-dlp, ffmpeg (audio transcode + video merge), deno or node (YouTube)
 export HENCH_NWC_URI="nostr+walletconnect://…"   # from Alby Hub, nwc.link, Zeus, …
 cargo run --release
 ```
@@ -48,17 +57,28 @@ wallet, cookie sessions, browser/script tools):
 - allowed & blocked platforms
 - NWC wallet URI (write-only)
 
-Settings persist to `~/.hench-cli/config.json` (0600) and take effect on
-save — the worker is rebuilt when running. Env vars (`HENCH_*`) only seed
-first-run defaults.
+Polling preserves unsaved settings and recovers after a failed initial state
+request. Job fields are rendered as text, never executable HTML.
+
+Settings persist to `~/.hench-cli/config.json` (0600, created with private
+permissions before any bytes) and take effect on save — the worker is rebuilt
+when running. Env vars (`HENCH_*`) only seed first-run defaults. On loopback
+the dashboard only serves requests addressed to its loopback Host
+(DNS-rebinding defense); mutating routes additionally require a matching
+Origin/Sec-Fetch-Site when a browser sends them (plain curl unaffected), and
+non-loopback binds require the token.
 
 ## No double charging
 
 Paid calls are keyed by CEP-8 canonical invocation id (client + method +
-args) and recorded durably **before** any invoice exists:
+args) and recorded **before** any invoice exists — durably: `jobs.json` is
+written 0600 + fsynced + atomically renamed, and if that write fails no
+invoice is issued at all. Payment-initiation failures return an immediate,
+correlated error; private wallet and filesystem diagnostics stay in server logs.
 
 - replay of a finished call → the payment gate is **waived** and the cached
-  result is returned (no second invoice, ever)
+  result is returned (no second invoice, ever) — paid records are never
+  evicted, only stale unpaid quotes are pruned
 - a request that was interrupted by a restart → **rejected** with a clear
   message, never re-invoiced (`jobs.json` startup sweep)
 - duplicate delivery while a job is executing → rejected as busy
@@ -71,7 +91,22 @@ gets a rejection, not a second charge.
 
 `download_media { url, mode: "audio"|"full", blossom_server? }` — priced
 (base + hourly rate; the app's cookie-gated platform risk premium is dropped
-on CLI), URL-safety checked (scheme, platform allow/block, DNS-rebinding
-defense — ported from the app), downloaded with system yt-dlp under a 600 s
-budget, uploaded to the first Blossom server that accepts it, result returned
-as text + `resource_link`.
+on CLI), URL-safety checked at quote time (http(s) only, known-platform host,
+platform allow/block, and the host must not resolve to a private/loopback
+address — a check done once before download, so a hostile DNS rebind during
+the fetch itself is out of scope), downloaded with system yt-dlp under a
+600 s budget (full mode selects adaptive streams and ffmpeg merges to mp4).
+The stderr pipe is drained throughout execution while retaining only its
+last 1 KiB for errors. The artifact is uploaded to the first Blossom server
+that accepts it and returned as text + `resource_link`.
+
+## Release readiness
+
+See the [cross-project release-readiness report](https://github.com/autonomica-xyz/hench/blob/main/docs/release-readiness.html)
+for observed verification and remaining production checks. Download the HTML
+file to view or print it in a browser.
+
+## License
+
+MIT for Hench's own code (see [LICENSE](LICENSE)); the vendored ContextVM SDK
+in `vendor/contextvm-sdk` keeps its own MIT license (Kosti Rytkönen).

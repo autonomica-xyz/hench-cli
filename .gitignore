@@ -1,0 +1,4 @@
+/target
+# local worker state if run from the repo checkout
+/.hench-cli/
+*.tmp

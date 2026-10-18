@@ -1,0 +1,807 @@
+//! Core types for the ContextVM protocol
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::time::Instant;
+
+use crate::core::constants::{EPHEMERAL_GIFT_WRAP_KIND, GIFT_WRAP_KIND};
+
+// ── Encryption mode ─────────────────────────────────────────────────
+
+/// Encryption mode for transport communication.
+///
+/// Controls whether MCP messages are sent as plaintext kind 25910 events
+/// or wrapped in NIP-59 gift wraps (kind 1059) for end-to-end encryption.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EncryptionMode {
+    /// Encrypt responses only when the incoming request was encrypted (mirror mode).
+    #[default]
+    Optional,
+    /// Enforce encryption for all messages; reject plaintext.
+    Required,
+    /// Disable encryption entirely; all messages are plaintext kind 25910.
+    Disabled,
+}
+
+/// Gift-wrap policy for encrypted transport communication (CEP-19)
+///
+/// Controls whether encrypted messages use persistent gift wraps (kind `1059`),
+/// ephemeral gift wraps (kind `21059`), or adapt based on peer support.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GiftWrapMode {
+    /// Prefer persistent gift wraps until ephemeral support is explicitly chosen or learned.
+    #[default]
+    Optional,
+    /// Force the ephemeral gift-wrap kind (`21059`) for encrypted messages.
+    Ephemeral,
+    /// Force the persistent gift-wrap kind (`1059`) for encrypted messages.
+    Persistent,
+}
+
+impl GiftWrapMode {
+    /// Returns whether this mode accepts the given encrypted outer event kind.
+    pub fn allows_kind(self, kind: u16) -> bool {
+        match self {
+            Self::Optional => kind == GIFT_WRAP_KIND || kind == EPHEMERAL_GIFT_WRAP_KIND,
+            Self::Ephemeral => kind == EPHEMERAL_GIFT_WRAP_KIND,
+            Self::Persistent => kind == GIFT_WRAP_KIND,
+        }
+    }
+
+    /// Returns whether this mode supports sending and advertising ephemeral gift wraps.
+    pub fn supports_ephemeral(self) -> bool {
+        !matches!(self, Self::Persistent)
+    }
+}
+
+// ── Server info ─────────────────────────────────────────────────────
+
+/// Server information for announcements (kind 11316).
+///
+/// Published as the content of a replaceable Nostr event so that clients
+/// can discover the server's identity and metadata.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ServerInfo {
+    /// Human-readable server name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Server software version string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// URL to the server's avatar or logo image.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+    /// Server's website URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub website: Option<String>,
+    /// Short description of the server's purpose.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub about: Option<String>,
+}
+
+impl ServerInfo {
+    /// Set the server name.
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+    /// Set the server version.
+    pub fn with_version(mut self, version: impl Into<String>) -> Self {
+        self.version = Some(version.into());
+        self
+    }
+    /// Set the server picture URL.
+    pub fn with_picture(mut self, picture: impl Into<String>) -> Self {
+        self.picture = Some(picture.into());
+        self
+    }
+    /// Set the server website URL.
+    pub fn with_website(mut self, website: impl Into<String>) -> Self {
+        self.website = Some(website.into());
+        self
+    }
+    /// Set the server description.
+    pub fn with_about(mut self, about: impl Into<String>) -> Self {
+        self.about = Some(about.into());
+        self
+    }
+}
+
+// ── Profile metadata ────────────────────────────────────────────────
+
+/// Nostr profile metadata for server identity (NIP-01 kind 0 / CEP-23).
+///
+/// Opt-in profile that servers can publish so clients see a human-friendly
+/// identity on the Nostr network. Serialized as the content of a kind 0 event.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ProfileMetadata {
+    /// Display name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Short description or bio.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub about: Option<String>,
+    /// Avatar / profile picture URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+    /// Banner image URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub banner: Option<String>,
+    /// Website URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub website: Option<String>,
+    /// NIP-05 verification identifier (e.g. `user@example.com`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nip05: Option<String>,
+    /// Lightning address for payments (LUD-16).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lud16: Option<String>,
+    /// Arbitrary additional fields preserved across round-trips.
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+impl ProfileMetadata {
+    /// Set the display name.
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+    /// Set the description / bio.
+    pub fn with_about(mut self, about: impl Into<String>) -> Self {
+        self.about = Some(about.into());
+        self
+    }
+    /// Set the avatar URL.
+    pub fn with_picture(mut self, picture: impl Into<String>) -> Self {
+        self.picture = Some(picture.into());
+        self
+    }
+    /// Set the banner image URL.
+    pub fn with_banner(mut self, banner: impl Into<String>) -> Self {
+        self.banner = Some(banner.into());
+        self
+    }
+    /// Set the website URL.
+    pub fn with_website(mut self, website: impl Into<String>) -> Self {
+        self.website = Some(website.into());
+        self
+    }
+    /// Set the NIP-05 verification identifier.
+    pub fn with_nip05(mut self, nip05: impl Into<String>) -> Self {
+        self.nip05 = Some(nip05.into());
+        self
+    }
+    /// Set the Lightning address (LUD-16).
+    pub fn with_lud16(mut self, lud16: impl Into<String>) -> Self {
+        self.lud16 = Some(lud16.into());
+        self
+    }
+}
+
+// ── Client session ──────────────────────────────────────────────────
+
+/// Client session state tracked by the server transport.
+///
+/// `#[non_exhaustive]`: the transport adds fields as new CEPs land, so construct via
+/// [`ClientSession::new`] rather than a struct literal.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ClientSession {
+    /// Whether the client has completed MCP initialization.
+    pub is_initialized: bool,
+    /// Whether the client's messages were encrypted.
+    pub is_encrypted: bool,
+    /// Whether server discovery tags have been sent to this client (one-shot flag).
+    pub has_sent_common_tags: bool,
+    /// Whether the client has demonstrated support for ephemeral gift wraps (CEP-19).
+    pub supports_ephemeral_gift_wrap: bool,
+    /// Learned from client discovery tags: peer supports NIP-44 encryption.
+    pub supports_encryption: bool,
+    /// Learned from client discovery tags: peer supports ephemeral gift wraps (CEP-19).
+    pub supports_ephemeral_encryption: bool,
+    /// Learned from client discovery tags: peer supports CEP-22 oversized transfer.
+    pub supports_oversized_transfer: bool,
+    /// Learned from client discovery tags: peer supports CEP-41 open streams
+    /// (learned, gated by the server's open-stream config).
+    pub supports_open_stream: bool,
+    /// CEP-8: the payment-interaction mode the client requested (last `payment_interaction` tag seen).
+    pub requested_payment_interaction: Option<PaymentInteractionMode>,
+    /// CEP-8: the payment-interaction mode negotiated as effective for this session.
+    pub effective_payment_interaction: Option<PaymentInteractionMode>,
+    /// CEP-8: whether the effective mode has been disclosed on a response to this client yet.
+    pub has_disclosed_payment_interaction: bool,
+    /// Last activity timestamp.
+    pub last_activity: Instant,
+    /// Pending requests: event_id → original request ID.
+    pub pending_requests: HashMap<String, serde_json::Value>,
+    /// Progress token tracking: event_id → progress token string.
+    pub event_to_progress_token: HashMap<String, String>,
+}
+
+impl ClientSession {
+    /// Create a new client session, recording whether the initial message was encrypted.
+    pub fn new(is_encrypted: bool) -> Self {
+        Self {
+            is_initialized: false,
+            is_encrypted,
+            has_sent_common_tags: false,
+            supports_ephemeral_gift_wrap: false,
+            supports_encryption: false,
+            supports_ephemeral_encryption: false,
+            supports_oversized_transfer: false,
+            supports_open_stream: false,
+            requested_payment_interaction: None,
+            effective_payment_interaction: None,
+            has_disclosed_payment_interaction: false,
+            last_activity: Instant::now(),
+            pending_requests: HashMap::new(),
+            event_to_progress_token: HashMap::new(),
+        }
+    }
+
+    /// Touch the session, updating [`last_activity`](Self::last_activity) to now.
+    pub fn update_activity(&mut self) {
+        self.last_activity = Instant::now();
+    }
+}
+
+// ── Payment interaction (CEP-8) ─────────────────────────────────────
+
+/// CEP-8 payment interaction mode negotiated per session.
+///
+/// Serialized as `"transparent"` / `"explicit_gating"` on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaymentInteractionMode {
+    /// Side-band notifications; the request is still forwarded after payment.
+    Transparent,
+    /// Request is gated with a JSON-RPC error until paid.
+    ExplicitGating,
+}
+
+// ── JSON-RPC types ──────────────────────────────────────────────────
+//
+// MCP uses JSON-RPC 2.0. We define our own types here since there's
+// no official Rust MCP SDK. These are wire-compatible with the MCP spec.
+
+/// A JSON-RPC 2.0 message (request, response, notification, or error).
+///
+/// This is the primary message type exchanged between MCP clients and servers.
+/// Deserialized using `#[serde(untagged)]` to match any of the four variants.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum JsonRpcMessage {
+    /// A request expecting a response (has `id` and `method`).
+    Request(JsonRpcRequest),
+    /// A successful response (has `id` and `result`).
+    Response(JsonRpcResponse),
+    /// An error response (has `id` and `error`).
+    ErrorResponse(JsonRpcErrorResponse),
+    /// A notification (has `method`, no `id`, no response expected).
+    Notification(JsonRpcNotification),
+}
+
+/// A JSON-RPC 2.0 request.
+///
+/// Contains a method name and an optional params object. The `id` field
+/// is used to correlate the response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonRpcRequest {
+    /// Must be `"2.0"`.
+    pub jsonrpc: String,
+    /// Request identifier for response correlation.
+    pub id: serde_json::Value,
+    /// The RPC method name (e.g., `"tools/list"`, `"tools/call"`).
+    pub method: String,
+    /// Optional method parameters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
+}
+
+/// A JSON-RPC 2.0 successful response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonRpcResponse {
+    /// Must be `"2.0"`.
+    pub jsonrpc: String,
+    /// The request ID this response corresponds to.
+    pub id: serde_json::Value,
+    /// The result payload.
+    pub result: serde_json::Value,
+}
+
+/// A JSON-RPC 2.0 error response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonRpcErrorResponse {
+    /// Must be `"2.0"`.
+    pub jsonrpc: String,
+    /// The request ID this error corresponds to.
+    pub id: serde_json::Value,
+    /// The error object describing what went wrong.
+    pub error: JsonRpcError,
+}
+
+/// A JSON-RPC 2.0 error object.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonRpcError {
+    /// Numeric error code (e.g., `-32600` for invalid request).
+    pub code: i64,
+    /// Human-readable error message.
+    pub message: String,
+    /// Optional additional error data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
+/// A JSON-RPC 2.0 notification (no `id`, no response expected).
+///
+/// Used for one-way messages like `notifications/initialized`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonRpcNotification {
+    /// Must be `"2.0"`.
+    pub jsonrpc: String,
+    /// The notification method name.
+    pub method: String,
+    /// Optional notification parameters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+impl JsonRpcMessage {
+    /// Check if this is a request (has id + method).
+    pub fn is_request(&self) -> bool {
+        matches!(self, Self::Request(_))
+    }
+
+    /// Check if this is a response (has id + result).
+    pub fn is_response(&self) -> bool {
+        matches!(self, Self::Response(_))
+    }
+
+    /// Check if this is an error response (has id + error).
+    pub fn is_error(&self) -> bool {
+        matches!(self, Self::ErrorResponse(_))
+    }
+
+    /// Check if this is a notification (has method, no id).
+    pub fn is_notification(&self) -> bool {
+        matches!(self, Self::Notification(_))
+    }
+
+    /// Get the method name if this is a request or notification.
+    pub fn method(&self) -> Option<&str> {
+        match self {
+            Self::Request(r) => Some(&r.method),
+            Self::Notification(n) => Some(&n.method),
+            _ => None,
+        }
+    }
+
+    /// Get the request/response id if present.
+    pub fn id(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Request(r) => Some(&r.id),
+            Self::Response(r) => Some(&r.id),
+            Self::ErrorResponse(r) => Some(&r.id),
+            Self::Notification(_) => None,
+        }
+    }
+}
+
+// ── Capability exclusion ────────────────────────────────────────────
+
+/// A capability exclusion pattern that bypasses pubkey whitelisting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapabilityExclusion {
+    /// The JSON-RPC method to exclude (e.g., "tools/call", "tools/list").
+    pub method: String,
+    /// Optional capability name for method-specific exclusions (e.g., "get_weather").
+    pub name: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::constants::{EPHEMERAL_GIFT_WRAP_KIND, GIFT_WRAP_KIND};
+    use serde_json::json;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn test_encryption_mode_serde_roundtrip_optional() {
+        let mode = EncryptionMode::Optional;
+        let s = serde_json::to_string(&mode).unwrap();
+        assert_eq!(s, "\"optional\"");
+        let parsed: EncryptionMode = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed, mode);
+    }
+
+    #[test]
+    fn test_encryption_mode_serde_roundtrip_required() {
+        let mode = EncryptionMode::Required;
+        let s = serde_json::to_string(&mode).unwrap();
+        assert_eq!(s, "\"required\"");
+        let parsed: EncryptionMode = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed, mode);
+    }
+
+    #[test]
+    fn test_encryption_mode_serde_roundtrip_disabled() {
+        let mode = EncryptionMode::Disabled;
+        let s = serde_json::to_string(&mode).unwrap();
+        assert_eq!(s, "\"disabled\"");
+        let parsed: EncryptionMode = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed, mode);
+    }
+
+    #[test]
+    fn test_payment_interaction_mode_serde_roundtrip_transparent() {
+        let mode = PaymentInteractionMode::Transparent;
+        let s = serde_json::to_string(&mode).unwrap();
+        assert_eq!(s, "\"transparent\"");
+        let parsed: PaymentInteractionMode = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed, mode);
+    }
+
+    #[test]
+    fn test_payment_interaction_mode_serde_roundtrip_explicit_gating() {
+        let mode = PaymentInteractionMode::ExplicitGating;
+        let s = serde_json::to_string(&mode).unwrap();
+        assert_eq!(s, "\"explicit_gating\"");
+        let parsed: PaymentInteractionMode = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed, mode);
+    }
+
+    #[test]
+    fn test_gift_wrap_mode_serde_roundtrip_optional() {
+        let mode = GiftWrapMode::Optional;
+        let s = serde_json::to_string(&mode).unwrap();
+        assert_eq!(s, "\"optional\"");
+        let parsed: GiftWrapMode = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed, mode);
+    }
+
+    #[test]
+    fn test_gift_wrap_mode_serde_roundtrip_ephemeral() {
+        let mode = GiftWrapMode::Ephemeral;
+        let s = serde_json::to_string(&mode).unwrap();
+        assert_eq!(s, "\"ephemeral\"");
+        let parsed: GiftWrapMode = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed, mode);
+    }
+
+    #[test]
+    fn test_gift_wrap_mode_serde_roundtrip_persistent() {
+        let mode = GiftWrapMode::Persistent;
+        let s = serde_json::to_string(&mode).unwrap();
+        assert_eq!(s, "\"persistent\"");
+        let parsed: GiftWrapMode = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed, mode);
+    }
+
+    #[test]
+    fn test_gift_wrap_mode_policy_helpers() {
+        // Optional accepts both kinds
+        assert!(GiftWrapMode::Optional.allows_kind(GIFT_WRAP_KIND));
+        assert!(GiftWrapMode::Optional.allows_kind(EPHEMERAL_GIFT_WRAP_KIND));
+        // Ephemeral only accepts 21059
+        assert!(GiftWrapMode::Ephemeral.allows_kind(EPHEMERAL_GIFT_WRAP_KIND));
+        assert!(!GiftWrapMode::Ephemeral.allows_kind(GIFT_WRAP_KIND));
+        // Persistent only accepts 1059
+        assert!(GiftWrapMode::Persistent.allows_kind(GIFT_WRAP_KIND));
+        assert!(!GiftWrapMode::Persistent.allows_kind(EPHEMERAL_GIFT_WRAP_KIND));
+        // supports_ephemeral check
+        assert!(GiftWrapMode::Optional.supports_ephemeral());
+        assert!(GiftWrapMode::Ephemeral.supports_ephemeral());
+        assert!(!GiftWrapMode::Persistent.supports_ephemeral());
+    }
+
+    fn assert_json_rpc_roundtrip(msg: &JsonRpcMessage) {
+        let wire = serde_json::to_string(msg).unwrap();
+        let parsed: JsonRpcMessage = serde_json::from_str(&wire).unwrap();
+        let before = serde_json::to_value(msg).unwrap();
+        let after = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn test_json_rpc_message_serde_roundtrip_request() {
+        let msg = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: json!(42),
+            method: "tools/list".to_string(),
+            params: Some(json!({ "cursor": null })),
+        });
+        assert_json_rpc_roundtrip(&msg);
+    }
+
+    #[test]
+    fn test_json_rpc_message_serde_roundtrip_request_without_params() {
+        let msg = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: json!("req-id"),
+            method: "ping".to_string(),
+            params: None,
+        });
+        assert_json_rpc_roundtrip(&msg);
+    }
+
+    #[test]
+    fn test_json_rpc_message_serde_roundtrip_response() {
+        let msg = JsonRpcMessage::Response(JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: json!(1),
+            result: json!({ "tools": [] }),
+        });
+        assert_json_rpc_roundtrip(&msg);
+    }
+
+    #[test]
+    fn test_json_rpc_message_serde_roundtrip_error_response() {
+        let msg = JsonRpcMessage::ErrorResponse(JsonRpcErrorResponse {
+            jsonrpc: "2.0".to_string(),
+            id: json!(99),
+            error: JsonRpcError {
+                code: -32600,
+                message: "Invalid Request".to_string(),
+                data: Some(json!({ "hint": "fix it" })),
+            },
+        });
+        assert_json_rpc_roundtrip(&msg);
+    }
+
+    #[test]
+    fn test_json_rpc_message_serde_roundtrip_notification() {
+        let msg = JsonRpcMessage::Notification(JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "notifications/initialized".to_string(),
+            params: None,
+        });
+        assert_json_rpc_roundtrip(&msg);
+    }
+
+    #[test]
+    fn test_json_rpc_message_type_predicates() {
+        let req = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: json!(1),
+            method: "m".to_string(),
+            params: None,
+        });
+        let res = JsonRpcMessage::Response(JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: json!(1),
+            result: json!(null),
+        });
+        let err = JsonRpcMessage::ErrorResponse(JsonRpcErrorResponse {
+            jsonrpc: "2.0".to_string(),
+            id: json!(1),
+            error: JsonRpcError {
+                code: -1,
+                message: "e".to_string(),
+                data: None,
+            },
+        });
+        let notif = JsonRpcMessage::Notification(JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "n".to_string(),
+            params: None,
+        });
+
+        assert!(req.is_request());
+        assert!(res.is_response());
+        assert!(err.is_error());
+        assert!(notif.is_notification());
+    }
+
+    #[test]
+    fn test_json_rpc_error_data_none_omitted() {
+        let err = JsonRpcError {
+            code: -32600,
+            message: "bad".to_string(),
+            data: None,
+        };
+        let json_str = serde_json::to_string(&err).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let obj = value.as_object().expect("error object");
+        assert!(
+            !obj.contains_key("data"),
+            "expected data omitted when None, got: {json_str}"
+        );
+    }
+
+    #[test]
+    fn test_json_rpc_message_method() {
+        let req = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: json!(0),
+            method: "tools/call".to_string(),
+            params: None,
+        });
+        let res = JsonRpcMessage::Response(JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: json!(0),
+            result: json!(null),
+        });
+        let err = JsonRpcMessage::ErrorResponse(JsonRpcErrorResponse {
+            jsonrpc: "2.0".to_string(),
+            id: json!(0),
+            error: JsonRpcError {
+                code: 0,
+                message: "e".to_string(),
+                data: None,
+            },
+        });
+        let notif = JsonRpcMessage::Notification(JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "notifications/progress".to_string(),
+            params: None,
+        });
+
+        assert_eq!(req.method(), Some("tools/call"));
+        assert_eq!(res.method(), None);
+        assert_eq!(err.method(), None);
+        assert_eq!(notif.method(), Some("notifications/progress"));
+    }
+
+    #[test]
+    fn test_json_rpc_message_id() {
+        let req = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: json!("abc"),
+            method: "m".to_string(),
+            params: None,
+        });
+        let res = JsonRpcMessage::Response(JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: json!(7),
+            result: json!(null),
+        });
+        let err = JsonRpcMessage::ErrorResponse(JsonRpcErrorResponse {
+            jsonrpc: "2.0".to_string(),
+            id: json!([1, 2]),
+            error: JsonRpcError {
+                code: 0,
+                message: "e".to_string(),
+                data: None,
+            },
+        });
+        let notif = JsonRpcMessage::Notification(JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "n".to_string(),
+            params: None,
+        });
+
+        assert_eq!(req.id(), Some(&json!("abc")));
+        assert_eq!(res.id(), Some(&json!(7)));
+        assert_eq!(err.id(), Some(&json!([1, 2])));
+        assert_eq!(notif.id(), None);
+    }
+
+    #[test]
+    fn test_server_info_serde_all_fields_present() {
+        let info = ServerInfo {
+            name: Some("Test Server".to_string()),
+            version: Some("1.0.0".to_string()),
+            picture: Some("https://example.com/p.png".to_string()),
+            website: Some("https://example.com".to_string()),
+            about: Some("About text".to_string()),
+        };
+        let json_str = serde_json::to_string(&info).unwrap();
+        let parsed: ServerInfo = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed.name, info.name);
+        assert_eq!(parsed.version, info.version);
+        assert_eq!(parsed.picture, info.picture);
+        assert_eq!(parsed.website, info.website);
+        assert_eq!(parsed.about, info.about);
+    }
+
+    #[test]
+    fn test_server_info_serde_optional_fields_omitted() {
+        let info = ServerInfo {
+            name: None,
+            version: None,
+            picture: None,
+            website: None,
+            about: None,
+        };
+        let json_str = serde_json::to_string(&info).unwrap();
+        assert_eq!(json_str, "{}");
+    }
+
+    #[test]
+    fn test_client_session_new_initial_state_encrypted() {
+        let session = ClientSession::new(true);
+        assert!(!session.is_initialized);
+        assert!(session.is_encrypted);
+        assert!(session.pending_requests.is_empty());
+        assert!(session.event_to_progress_token.is_empty());
+    }
+
+    #[test]
+    fn test_client_session_new_initial_state_plaintext() {
+        let session = ClientSession::new(false);
+        assert!(!session.is_initialized);
+        assert!(!session.is_encrypted);
+        assert!(session.pending_requests.is_empty());
+        assert!(session.event_to_progress_token.is_empty());
+    }
+
+    #[test]
+    fn test_client_session_update_activity() {
+        let mut session = ClientSession::new(false);
+        let first = session.last_activity;
+        thread::sleep(Duration::from_millis(10));
+        session.update_activity();
+        assert!(session.last_activity > first);
+    }
+
+    #[test]
+    fn test_profile_metadata_serde_roundtrip() {
+        let meta = ProfileMetadata {
+            name: Some("My Server".to_string()),
+            about: Some("Does things".to_string()),
+            picture: Some("https://example.com/pic.png".to_string()),
+            banner: Some("https://example.com/banner.png".to_string()),
+            website: Some("https://example.com".to_string()),
+            nip05: Some("server@example.com".to_string()),
+            lud16: Some("server@getalby.com".to_string()),
+            extra: HashMap::new(),
+        };
+        let json_str = serde_json::to_string(&meta).unwrap();
+        let parsed: ProfileMetadata = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed.name, meta.name);
+        assert_eq!(parsed.about, meta.about);
+        assert_eq!(parsed.picture, meta.picture);
+        assert_eq!(parsed.banner, meta.banner);
+        assert_eq!(parsed.website, meta.website);
+        assert_eq!(parsed.nip05, meta.nip05);
+        assert_eq!(parsed.lud16, meta.lud16);
+    }
+
+    #[test]
+    fn test_profile_metadata_default_serializes_empty() {
+        let meta = ProfileMetadata::default();
+        let json_str = serde_json::to_string(&meta).unwrap();
+        assert_eq!(json_str, "{}");
+    }
+
+    #[test]
+    fn test_profile_metadata_preserves_custom_fields() {
+        let json_str = r#"{"name":"Srv","custom_flag":true,"rank":42}"#;
+        let parsed: ProfileMetadata = serde_json::from_str(json_str).unwrap();
+        assert_eq!(parsed.name, Some("Srv".to_string()));
+        assert_eq!(parsed.extra.get("custom_flag"), Some(&json!(true)));
+        assert_eq!(parsed.extra.get("rank"), Some(&json!(42)));
+
+        let reserialized = serde_json::to_string(&parsed).unwrap();
+        let reparsed: serde_json::Value = serde_json::from_str(&reserialized).unwrap();
+        assert_eq!(reparsed["custom_flag"], json!(true));
+        assert_eq!(reparsed["rank"], json!(42));
+    }
+
+    #[test]
+    fn test_profile_metadata_builder() {
+        let meta = ProfileMetadata::default()
+            .with_name("Test")
+            .with_about("Bio")
+            .with_picture("https://pic.url")
+            .with_banner("https://banner.url")
+            .with_website("https://web.url")
+            .with_nip05("user@example.com")
+            .with_lud16("user@getalby.com");
+        assert_eq!(meta.name.as_deref(), Some("Test"));
+        assert_eq!(meta.about.as_deref(), Some("Bio"));
+        assert_eq!(meta.picture.as_deref(), Some("https://pic.url"));
+        assert_eq!(meta.banner.as_deref(), Some("https://banner.url"));
+        assert_eq!(meta.website.as_deref(), Some("https://web.url"));
+        assert_eq!(meta.nip05.as_deref(), Some("user@example.com"));
+        assert_eq!(meta.lud16.as_deref(), Some("user@getalby.com"));
+    }
+}

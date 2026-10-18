@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hench-cli</title>
+<style>
+  :root { --bg:#111318; --panel:#1a1d24; --line:#2a2e38; --text:#e6e8ee; --dim:#8b90a0;
+          --accent:#f5c518; --ok:#4ade80; --bad:#f87171; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.5 ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
+  .wrap { max-width:900px; margin:0 auto; padding:24px 16px 80px; }
+  header { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+  h1 { font-size:18px; margin:0; }
+  h1 .dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:var(--bad); margin-right:8px; }
+  h1 .dot.on { background:var(--ok); }
+  .npub { color:var(--dim); font-size:12px; cursor:pointer; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin:20px 0; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .card .v { font-size:24px; color:var(--accent); }
+  .card .l { color:var(--dim); font-size:12px; margin-top:2px; }
+  button { background:var(--accent); color:#111; border:0; border-radius:8px; padding:10px 18px;
+           font:inherit; font-weight:700; cursor:pointer; }
+  button.sec { background:var(--panel); color:var(--text); border:1px solid var(--line); font-weight:400; }
+  button.big { width:100%; padding:16px; font-size:16px; }
+  button.stop { background:var(--bad); color:#111; }
+  button:disabled { opacity:.5; cursor:default; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+            padding:16px; margin:14px 0; }
+  section h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em;
+               color:var(--dim); margin:0 0 12px; }
+  label { display:block; margin:10px 0 4px; color:var(--dim); font-size:12px; }
+  input[type=text], input[type=password], input[type=number], input[type=time], textarea, select {
+    width:100%; background:#0d0f13; color:var(--text); border:1px solid var(--line);
+    border-radius:6px; padding:8px; font:inherit; }
+  textarea { min-height:64px; resize:vertical; }
+  .row { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; }
+  .checks { display:flex; flex-wrap:wrap; gap:6px 16px; }
+  .checks label { display:flex; align-items:center; gap:6px; margin:0; color:var(--text); font-size:13px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); overflow:hidden;
+           text-overflow:ellipsis; white-space:nowrap; max-width:220px; }
+  th { color:var(--dim); font-weight:400; }
+  .st { font-weight:700; } .st.COMPLETED { color:var(--ok); } .st.FAILED { color:var(--bad); }
+  .st.WAITING, .st.PROCESSING { color:var(--accent); }
+  .msg { margin:10px 0; padding:8px 12px; border-radius:6px; display:none; font-size:13px; }
+  .msg.ok { display:block; background:#10331f; color:var(--ok); }
+  .msg.err { display:block; background:#3a1717; color:var(--bad); }
+  .hint { color:var(--dim); font-size:12px; margin-top:8px; }
+  footer { color:var(--dim); font-size:11px; margin-top:24px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span class="dot" id="dot"></span><span id="workerName">hench-cli</span></h1>
+    <span class="npub" id="npub" title="click to copy">npub…</span>
+  </header>
+
+  <div class="cards">
+    <div class="card"><div class="v" id="earned">0</div><div class="l">sats earned</div></div>
+    <div class="card"><div class="v" id="done">0</div><div class="l">jobs completed</div></div>
+    <div class="card"><div class="v" id="failed">0</div><div class="l">jobs failed</div></div>
+    <div class="card"><div class="v" id="uptime">—</div><div class="l">worker uptime</div></div>
+  </div>
+
+  <section>
+    <button class="big" id="toggle">…</button>
+    <div class="msg" id="toggleMsg"></div>
+    <div class="hint" id="mode"></div>
+  </section>
+
+  <section id="settings">
+    <h2>Settings</h2>
+    <div class="msg" id="cfgMsg"></div>
+    <label>Worker name (announced)</label>
+    <input type="text" id="name" placeholder="hench-cli-…">
+    <div class="row">
+      <div>
+        <label>Nostr relays (one per line)</label>
+        <textarea id="relays"></textarea>
+      </div>
+      <div>
+        <label>Blossom servers (one per line)</label>
+        <textarea id="blossom"></textarea>
+      </div>
+    </div>
+    <label>yt-dlp binary</label>
+    <input type="text" id="ytdlp" placeholder="yt-dlp">
+    <div class="row">
+      <div><label>Base price (msat / job)</label><input type="number" id="baseMsat" min="0"></div>
+      <div><label>Audio rate (msat / hour)</label><input type="number" id="audioMsatPerHour" min="1"></div>
+      <div><label>Video rate (msat / hour)</label><input type="number" id="videoMsatPerHour" min="1"></div>
+      <div><label>Min billable (seconds)</label><input type="number" id="minBillableSecs" min="1"></div>
+    </div>
+    <label>Media modes</label>
+    <div class="checks">
+      <label><input type="checkbox" id="acceptAudio"> accept audio</label>
+      <label><input type="checkbox" id="acceptVideo"> accept video</label>
+    </div>
+    <label>Hours of operation</label>
+    <div class="row">
+      <div><select id="hoursType">
+        <option value="always">always open</option>
+        <option value="daily">daily window</option>
+      </select></div>
+      <div><label>from</label><input type="time" id="hoursStart" value="09:00"></div>
+      <div><label>until</label><input type="time" id="hoursEnd" value="17:00"></div>
+    </div>
+    <label>Allowed platforms (none checked = all accepted)</label>
+    <div class="checks" id="allowedPlatforms"></div>
+    <label>Blocked platforms</label>
+    <div class="checks" id="blockedPlatforms"></div>
+    <label>NWC wallet URI <span id="nwcState" style="color:var(--accent)"></span></label>
+    <input type="password" id="nwcUri" placeholder="nostr+walletconnect://… (leave blank to keep)" autocomplete="off">
+    <div style="margin-top:16px"><button id="save">Save settings</button></div>
+    <div class="hint">Saving restarts the worker when it is running. Replayed paid calls are answered from the job cache — never re-invoiced.</div>
+  </section>
+
+  <section>
+    <h2>Recent jobs</h2>
+    <table>
+      <thead><tr><th>when</th><th>status</th><th>sats</th><th>mode</th><th>url</th></tr></thead>
+      <tbody id="jobs"><tr><td colspan="5" style="color:var(--dim)">no jobs yet</td></tr></tbody>
+    </table>
+  </section>
+
+  <footer>hench-cli · ContextVM worker · <span id="pub"></span></footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const token = new URLSearchParams(location.search).get("token") || localStorage.getItem("henchToken") || "";
+if (token) localStorage.setItem("henchToken", token);
+const api = (path, opts) => fetch(path + (token ? `?token=${encodeURIComponent(token)}` : ""), {
+  headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...opts });
+
+let state = null, busy = false, formDirty = false;
+
+function fillForm(cfg) {
+  $("name").value = cfg.name || "";
+  $("relays").value = (cfg.relays || []).join("\n");
+  $("blossom").value = (cfg.blossom || []).join("\n");
+  $("ytdlp").value = cfg.ytdlp || "yt-dlp";
+  $("baseMsat").value = cfg.baseMsat ?? 0;
+  $("audioMsatPerHour").value = cfg.audioMsatPerHour ?? 0;
+  $("videoMsatPerHour").value = cfg.videoMsatPerHour ?? 0;
+  $("minBillableSecs").value = cfg.minBillableSecs ?? 60;
+  $("acceptAudio").checked = !!cfg.acceptAudio;
+  $("acceptVideo").checked = !!cfg.acceptVideo;
+  const h = cfg.hours || { type: "always" };
+  $("hoursType").value = h.type === "daily" ? "daily" : "always";
+  $("hoursStart").value = h.start || "09:00";
+  $("hoursEnd").value = h.end || "17:00";
+  $("hoursType").onchange();
+  for (const [box, list] of [["allowedPlatforms", cfg.allowedPlatforms], ["blockedPlatforms", cfg.blockedPlatforms]]) {
+    $(box).querySelectorAll("input").forEach(i => i.checked = (list || []).includes(i.value));
+  }
+  $("nwcUri").value = "";
+  $("nwcState").textContent = cfg.nwcConfigured ? "· set (send a new URI to replace)" : "· not set";
+}
+
+function collectForm() {
+  const lines = id => $(id).value.split("\n").map(s => s.trim()).filter(Boolean);
+  const pluck = id => Array.from($(id).querySelectorAll("input:checked")).map(i => i.value);
+  return {
+    name: $("name").value.trim(),
+    relays: lines("relays"), blossom: lines("blossom"),
+    ytdlp: $("ytdlp").value.trim() || "yt-dlp",
+    baseMsat: +$("baseMsat").value || 0,
+    audioMsatPerHour: +$("audioMsatPerHour").value || 0,
+    videoMsatPerHour: +$("videoMsatPerHour").value || 0,
+    minBillableSecs: +$("minBillableSecs").value || 60,
+    acceptAudio: $("acceptAudio").checked, acceptVideo: $("acceptVideo").checked,
+    hours: $("hoursType").value === "daily"
+      ? { type: "daily", start: $("hoursStart").value || "00:00", end: $("hoursEnd").value || "00:00" }
+      : { type: "always" },
+    allowedPlatforms: pluck("allowedPlatforms"), blockedPlatforms: pluck("blockedPlatforms"),
+    nwcUri: $("nwcUri").value.trim() || "",
+  };
+}
+
+function render(s) {
+  if (!state) for (const box of ["allowedPlatforms", "blockedPlatforms"]) {
+    const el = $(box);
+    el.textContent = "";
+    for (const p of s.platforms || []) {
+      const label = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = p;
+      label.append(input, " " + p);
+      el.appendChild(label);
+    }
+  }
+  state = s;
+  $("dot").classList.toggle("on", s.running);
+  $("workerName").textContent = s.config.name || "hench-cli";
+  document.title = `${s.config.name || "hench-cli"}${s.running ? " · on" : ""}`;
+  $("npub").textContent = s.npub;
+  $("pub").textContent = s.pubkeyHex;
+  $("earned").textContent = s.stats.earnedSats;
+  $("done").textContent = s.stats.completed;
+  $("failed").textContent = s.stats.failed;
+  const up = s.uptimeSecs;
+  $("uptime").textContent = s.running ? (up > 3600 ? `${(up/3600).toFixed(1)}h` : `${Math.floor(up/60)}m`) : "off";
+  const t = $("toggle");
+  t.textContent = s.running ? "⏹ STOP WORKER" : "▶ START WORKER";
+  t.classList.toggle("stop", s.running);
+  t.disabled = busy;
+  $("mode").textContent = s.free
+    ? "unpaid mode (HENCH_FREE) — jobs run without payment gating, testing only"
+    : `paid via NWC · payments settle to the configured wallet`;
+  if (!busy && !formDirty) fillForm(s.config);
+  const jobs = s.jobs || [];
+  const tbody = $("jobs");
+  tbody.textContent = "";
+  if (!jobs.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 5;
+    td.style.color = "var(--dim)";
+    td.textContent = "no jobs yet";
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  }
+  for (const j of jobs) {
+    // Job fields (url, mode, status) are attacker-controlled: build cells
+    // with DOM APIs + textContent only — never innerHTML.
+    const tr = document.createElement("tr");
+    const when = document.createElement("td");
+    when.textContent = new Date((+j.updatedAt || 0) * 1000).toLocaleTimeString();
+    const st = document.createElement("td");
+    st.className = "st " + String(j.status ?? "");
+    st.textContent = String(j.status ?? "");
+    const sats = document.createElement("td");
+    sats.textContent = j.amountSats || "";
+    const mode = document.createElement("td");
+    mode.textContent = String(j.mode ?? "");
+    const url = document.createElement("td");
+    url.title = String(j.url ?? "");
+    url.textContent = String(j.url ?? "");
+    tr.append(when, st, sats, mode, url);
+    tbody.appendChild(tr);
+  }
+}
+
+function msg(id, text, ok) {
+  const el = $(id);
+  el.className = `msg ${ok ? "ok" : "err"}`;
+  el.textContent = text;
+  setTimeout(() => { el.className = "msg"; }, 6000);
+}
+
+async function poll() {
+  try { const r = await api("/api/state"); if (r.ok) render(await r.json()); } catch {}
+}
+
+$("settings").addEventListener("input", () => { formDirty = true; });
+
+$("toggle").onclick = async () => {
+  busy = true; $("toggle").disabled = true;
+  try {
+    const r = await api("/api/worker", { method: "POST", body: JSON.stringify({ enabled: !state.running }) });
+    const b = await r.json();
+    if (!b.ok) msg("toggleMsg", b.error || "failed", false);
+    else msg("toggleMsg", b.enabled ? "worker started — announcing on relays" : "worker stopped", true);
+  } catch (e) { msg("toggleMsg", "request failed: " + e, false); }
+  busy = false; poll();
+};
+
+$("save").onclick = async () => {
+  const cfg = collectForm();
+  busy = true;
+  try {
+    const r = await api("/api/config", { method: "POST", body: JSON.stringify(cfg) });
+    const b = await r.json();
+    if (!b.ok) msg("cfgMsg", "not saved: " + (b.issues || []).join("; "), false);
+    else {
+      formDirty = false;
+      msg("cfgMsg", b.restarted ? "saved — worker restarted with new settings" : "saved", true);
+    }
+  } catch (e) { msg("cfgMsg", "request failed: " + e, false); }
+  busy = false; poll();
+};
+
+$("hoursType").onchange = () => {
+  const daily = $("hoursType").value === "daily";
+  $("hoursStart").disabled = $("hoursEnd").disabled = !daily;
+};
+$("npub").onclick = () => { navigator.clipboard?.writeText(state?.npub || ""); };
+
+poll();
+setInterval(poll, 2500);
+</script>
+</body>
+</html>
