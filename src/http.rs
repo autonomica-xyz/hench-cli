@@ -31,7 +31,9 @@ pub async fn serve(
     token: Option<String>,
 ) -> anyhow::Result<()> {
     if !loopback_only && token.is_none() {
-        anyhow::bail!("refusing to expose the dashboard on a non-loopback bind without HENCH_DASH_TOKEN");
+        anyhow::bail!(
+            "refusing to expose the dashboard on a non-loopback bind without HENCH_DASH_TOKEN"
+        );
     }
     let auth = Arc::new(token);
     let allowed_host = host_part(bind).to_lowercase();
@@ -42,7 +44,13 @@ pub async fn serve(
         .route("/api/worker", post(api_worker))
         .route("/api/shutdown", post(api_shutdown))
         .with_state((state, auth, loopback_only, allowed_host));
-    tracing::info!("dashboard listening on {}", listener.local_addr().map(|a| a.to_string()).unwrap_or_default());
+    tracing::info!(
+        "dashboard listening on {}",
+        listener
+            .local_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_default()
+    );
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -51,7 +59,11 @@ pub async fn serve(
 /// "localhost:…"). Anything else is remote-exposed.
 pub fn loopback_bind(bind: &str) -> bool {
     let host = host_part(bind);
-    host == "localhost" || host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
 }
 
 /// Host part of a bind/listen address ("[::1]:8932" -> "::1").
@@ -69,7 +81,10 @@ fn split_host_port(authority: &str) -> (String, Option<u16>) {
     if let Some(rest) = a.strip_prefix('[') {
         let mut it = rest.splitn(2, ']');
         let host = it.next().unwrap_or("").to_string();
-        let port = it.next().and_then(|p| p.strip_prefix(':')).and_then(|p| p.parse().ok());
+        let port = it
+            .next()
+            .and_then(|p| p.strip_prefix(':'))
+            .and_then(|p| p.parse().ok());
         return (host, port);
     }
     match a.rsplit_once(':') {
@@ -168,7 +183,11 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-async fn index(State(ctx): State<Ctx>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Result<Html<&'static str>, StatusCode> {
+async fn index(
+    State(ctx): State<Ctx>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<Html<&'static str>, StatusCode> {
     if check_host(&ctx, &headers) != StatusCode::OK {
         return Err(StatusCode::FORBIDDEN);
     }
@@ -185,7 +204,9 @@ async fn api_state(
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<Value>, StatusCode> {
     let (state, ..) = &ctx;
-    if check_host(&ctx, &headers) != StatusCode::OK || (check_auth(&ctx, &headers, &q)) != StatusCode::OK {
+    if check_host(&ctx, &headers) != StatusCode::OK
+        || (check_auth(&ctx, &headers, &q)) != StatusCode::OK
+    {
         return Err(StatusCode::UNAUTHORIZED);
     }
     let cfg = state.config.read().unwrap().clone();
@@ -215,9 +236,17 @@ async fn api_state(
     let mut config_json = serde_json::to_value(&cfg).unwrap_or_default();
     // Never echo the wallet secret back; the UI shows a write-only field.
     if let Some(uri) = config_json.get("nwcUri").and_then(|v| v.as_str()) {
-        config_json["nwcUri"] = json!(if uri.is_empty() { "" } else { "••••• set (hidden)" });
+        config_json["nwcUri"] = json!(if uri.is_empty() {
+            ""
+        } else {
+            "••••• set (hidden)"
+        });
     }
-    config_json["nwcConfigured"] = json!(cfg.nwc_uri.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false));
+    config_json["nwcConfigured"] = json!(cfg
+        .nwc_uri
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false));
     Ok(Json(json!({
         "running": running,
         "uptimeSecs": state.worker.lock().await.as_ref().map(|w| w.started_at.elapsed().as_secs()).unwrap_or(0),
@@ -243,7 +272,9 @@ async fn api_config(
     Json(mut new_cfg): Json<Config>,
 ) -> Result<Json<Value>, StatusCode> {
     let (state, ..) = &ctx;
-    if check_mutation(&ctx, &headers) != StatusCode::OK || (check_auth(&ctx, &headers, &q)) != StatusCode::OK {
+    if check_mutation(&ctx, &headers) != StatusCode::OK
+        || (check_auth(&ctx, &headers, &q)) != StatusCode::OK
+    {
         return Err(StatusCode::UNAUTHORIZED);
     }
     // Write-only wallet field: keep the stored URI unless a real one is sent.
@@ -261,13 +292,13 @@ async fn api_config(
     let was_running = state.worker.lock().await.is_some();
     // Persist before committing to memory: a failed save must leave the
     // running worker and the file in agreement.
-    config::save(&state.data_dir, &new_cfg)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    config::save(&state.data_dir, &new_cfg).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     *state.config.write().unwrap() = new_cfg;
-    let restarted = was_running && {
-        state.restart_worker().await.is_ok()
-    };
-    tracing::info!("settings saved{}", if restarted { " (worker restarted)" } else { "" });
+    let restarted = was_running && { state.restart_worker().await.is_ok() };
+    tracing::info!(
+        "settings saved{}",
+        if restarted { " (worker restarted)" } else { "" }
+    );
     Ok(Json(json!({ "ok": true, "restarted": restarted })))
 }
 
@@ -278,10 +309,15 @@ async fn api_worker(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
     let (state, ..) = &ctx;
-    if check_mutation(&ctx, &headers) != StatusCode::OK || (check_auth(&ctx, &headers, &q)) != StatusCode::OK {
+    if check_mutation(&ctx, &headers) != StatusCode::OK
+        || (check_auth(&ctx, &headers, &q)) != StatusCode::OK
+    {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    let enable = body.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    let enable = body
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     state.config.write().unwrap().enabled = enable;
     config::save(&state.data_dir, &state.config.read().unwrap().clone())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -305,7 +341,9 @@ async fn api_shutdown(
     headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<Value>, StatusCode> {
-    if check_mutation(&ctx, &headers) != StatusCode::OK || (check_auth(&ctx, &headers, &q)) != StatusCode::OK {
+    if check_mutation(&ctx, &headers) != StatusCode::OK
+        || (check_auth(&ctx, &headers, &q)) != StatusCode::OK
+    {
         return Err(StatusCode::UNAUTHORIZED);
     }
     tracing::warn!("shutdown requested from dashboard");
@@ -318,7 +356,10 @@ mod tests {
     use std::sync::RwLock;
 
     fn ctx(loopback_only: bool, allowed_host: &str) -> Ctx {
-        let dir = std::env::temp_dir().join(format!("hench-http-test-{}-{loopback_only}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "hench-http-test-{}-{loopback_only}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let state = Arc::new(AppState {
             data_dir: dir.clone(),
@@ -353,7 +394,10 @@ mod tests {
             ("sec-fetch-site", "cross-site"),
         ]);
         assert_eq!(check_mutation(&ctx, &hostile), StatusCode::FORBIDDEN);
-        let hostile_no_sfs = headers(&[("host", "127.0.0.1:8932"), ("origin", "http://evil.example")]);
+        let hostile_no_sfs = headers(&[
+            ("host", "127.0.0.1:8932"),
+            ("origin", "http://evil.example"),
+        ]);
         assert_eq!(check_mutation(&ctx, &hostile_no_sfs), StatusCode::FORBIDDEN);
         // Same-origin dashboard fetch passes.
         let same = headers(&[
@@ -375,10 +419,16 @@ mod tests {
         // Regression: Host check used to reject the LAN hostname a remote
         // operator legitimately browses to on a 0.0.0.0 bind.
         let ctx = ctx(false, "0.0.0.0");
-        let lan = headers(&[("host", "server.lan:8932"), ("origin", "http://server.lan:8932")]);
+        let lan = headers(&[
+            ("host", "server.lan:8932"),
+            ("origin", "http://server.lan:8932"),
+        ]);
         assert_eq!(check_mutation(&ctx, &lan), StatusCode::OK);
         // Cross-site still denied remotely (token remains mandatory too).
-        let hostile = headers(&[("host", "server.lan:8932"), ("sec-fetch-site", "cross-site")]);
+        let hostile = headers(&[
+            ("host", "server.lan:8932"),
+            ("sec-fetch-site", "cross-site"),
+        ]);
         assert_eq!(check_mutation(&ctx, &hostile), StatusCode::FORBIDDEN);
     }
 }

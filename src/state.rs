@@ -10,13 +10,16 @@ use anyhow::Context;
 use contextvm_sdk::core::types::{EncryptionMode, GiftWrapMode, ServerInfo};
 use contextvm_sdk::payments::types::PricedCapability;
 use contextvm_sdk::payments::{with_server_payments, ServerPaymentsOptions};
-use contextvm_sdk::transport::server::{IncomingRequest, NostrServerTransport, NostrServerTransportConfig};
+use contextvm_sdk::transport::server::{
+    IncomingRequest, NostrServerTransport, NostrServerTransportConfig,
+};
 use nostr_sdk::prelude::{Keys, Tag, ToBech32};
 use serde_json::{json, Value};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-pub const ABOUT: &str = "Hench worker: a computer that works for AI agents (media downloads) over ContextVM";
+pub const ABOUT: &str =
+    "Hench worker: a computer that works for AI agents (media downloads) over ContextVM";
 pub const PAYMENT_TTL_SECS: u64 = 300;
 pub const EXECUTION_BUDGET_SECS: u64 = 600;
 const UPLOAD_TIMEOUT_SECS: u64 = 900;
@@ -96,8 +99,12 @@ impl AppState {
                     .with_about(ABOUT),
             )
             // Paid call budget: payment window + execution (+ margin), mirroring the app's ServerConfig.
-            .with_request_timeout(Duration::from_secs(PAYMENT_TTL_SECS + EXECUTION_BUDGET_SECS + 60))
-            .with_session_timeout(Duration::from_secs(PAYMENT_TTL_SECS + EXECUTION_BUDGET_SECS * 2 + 60));
+            .with_request_timeout(Duration::from_secs(
+                PAYMENT_TTL_SECS + EXECUTION_BUDGET_SECS + 60,
+            ))
+            .with_session_timeout(Duration::from_secs(
+                PAYMENT_TTL_SECS + EXECUTION_BUDGET_SECS * 2 + 60,
+            ));
 
         let mut transport = NostrServerTransport::new(self.keys.clone(), nostr_config).await?;
 
@@ -135,7 +142,9 @@ impl AppState {
 
         transport.start().await?;
         transport.spawn_discoverability_publication();
-        let mut rx = transport.take_message_receiver().context("receiver taken")?;
+        let mut rx = transport
+            .take_message_receiver()
+            .context("receiver taken")?;
         let _ = transport.publish_tools(vec![download_media_tool()]).await;
         let _ = transport.announce().await;
         // Announcements can race relay websocket handshakes (seen on-device in
@@ -168,7 +177,11 @@ impl AppState {
             transport: t,
             started_at: std::time::Instant::now(),
         });
-        tracing::info!("worker started (name={}, relays={})", cfg.name, cfg.relays.join(", "));
+        tracing::info!(
+            "worker started (name={}, relays={})",
+            cfg.name,
+            cfg.relays.join(", ")
+        );
         Ok(())
     }
 
@@ -197,10 +210,29 @@ impl AppState {
         };
         match r.method.as_str() {
             "initialize" | "ping" => respond(mcp_success(&id, json!({}))).await,
-            "tools/list" => respond(mcp_success(&id, json!({ "tools": [download_media_tool()] }))).await,
-            "tools/call" => self.handle_tool_call(transport, &req, &id, r.params.as_ref().unwrap_or(&Value::Null)).await?,
+            "tools/list" => {
+                respond(mcp_success(
+                    &id,
+                    json!({ "tools": [download_media_tool()] }),
+                ))
+                .await
+            }
+            "tools/call" => {
+                self.handle_tool_call(
+                    transport,
+                    &req,
+                    &id,
+                    r.params.as_ref().unwrap_or(&Value::Null),
+                )
+                .await?
+            }
             other => {
-                respond(mcp_error(&id, -32601, &format!("Method not found: {other}"))).await;
+                respond(mcp_error(
+                    &id,
+                    -32601,
+                    &format!("Method not found: {other}"),
+                ))
+                .await;
             }
         }
         Ok(())
@@ -250,15 +282,36 @@ impl AppState {
         }
 
         let cfg = self.config.read().unwrap().clone();
-        let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
-        let blossom_override = args.get("blossom_server").and_then(|v| v.as_str()).map(str::to_string);
+        let url = args
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mode = args
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let blossom_override = args
+            .get("blossom_server")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         if url.is_empty() || (mode != "audio" && mode != "full") {
-            respond(mcp_error(id, -32602, "tools/call requires url and mode ('audio'|'full')")).await;
+            respond(mcp_error(
+                id,
+                -32602,
+                "tools/call requires url and mode ('audio'|'full')",
+            ))
+            .await;
             return Ok(());
         }
         if !cfg.hours.open_now() {
-            respond(tool_error(id, "CLOSED", "worker is outside its hours of operation")).await;
+            respond(tool_error(
+                id,
+                "CLOSED",
+                "worker is outside its hours of operation",
+            ))
+            .await;
             return Ok(());
         }
         if let Err(reason) =
@@ -276,7 +329,12 @@ impl AppState {
             servers.insert(0, over);
         }
         if !self.store.inflight_add(&canonical) {
-            respond(tool_error(id, "BUSY", "execution already in progress for this request")).await;
+            respond(tool_error(
+                id,
+                "BUSY",
+                "execution already in progress for this request",
+            ))
+            .await;
             return Ok(());
         }
         // Free mode never ran the quoter, so no WAITING record exists yet:
@@ -295,7 +353,12 @@ impl AppState {
                 updated_at: 0,
             }) {
                 self.store.inflight_remove(&canonical);
-                respond(tool_error(id, "INTERNAL", &format!("job store unavailable: {e:#}"))).await;
+                respond(tool_error(
+                    id,
+                    "INTERNAL",
+                    &format!("job store unavailable: {e:#}"),
+                ))
+                .await;
                 return Ok(());
             }
         }
@@ -313,11 +376,27 @@ impl AppState {
 
         let out_dir = self.data_dir.join("jobs").join(sanitize(&job_id));
         let budget = Duration::from_secs(EXECUTION_BUDGET_SECS);
-        let file = match crate::media::run_ytdlp(&cfg.ytdlp, &url, mode == "audio", &out_dir, budget).await {
+        let file = match crate::media::run_ytdlp(
+            &cfg.ytdlp,
+            &url,
+            mode == "audio",
+            &out_dir,
+            budget,
+        )
+        .await
+        {
             Ok(f) => f,
             Err(e) => {
-                let code = if is_auth_failure(&e) { "AUTH_FAILURE" } else { "DOWNLOAD" };
-                if let Err(p) = self.store.mark_terminal(&canonical, store::FAILED, Some(store::error_result(code, &e))) {
+                let code = if is_auth_failure(&e) {
+                    "AUTH_FAILURE"
+                } else {
+                    "DOWNLOAD"
+                };
+                if let Err(p) = self.store.mark_terminal(
+                    &canonical,
+                    store::FAILED,
+                    Some(store::error_result(code, &e)),
+                ) {
                     tracing::error!("terminal record NOT persisted for {canonical} — replay may re-invoice: {p:#}");
                 }
                 self.store.inflight_remove(&canonical);
@@ -336,10 +415,16 @@ impl AppState {
                 Some(&req.event_id),
             )
             .await;
-        let upload = match crate::media::blossom_upload(&self.http, &servers, &file, &self.keys).await {
+        let upload = match crate::media::blossom_upload(&self.http, &servers, &file, &self.keys)
+            .await
+        {
             Ok(u) => u,
             Err(e) => {
-                if let Err(p) = self.store.mark_terminal(&canonical, store::FAILED, Some(store::error_result("UPLOAD", &e))) {
+                if let Err(p) = self.store.mark_terminal(
+                    &canonical,
+                    store::FAILED,
+                    Some(store::error_result("UPLOAD", &e)),
+                ) {
                     tracing::error!("terminal record NOT persisted for {canonical} — replay may re-invoice: {p:#}");
                 }
                 self.store.inflight_remove(&canonical);
@@ -355,7 +440,13 @@ impl AppState {
             .extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_string())
-            .unwrap_or_else(|| if mode == "audio" { "mp3".into() } else { "mp4".into() });
+            .unwrap_or_else(|| {
+                if mode == "audio" {
+                    "mp3".into()
+                } else {
+                    "mp4".into()
+                }
+            });
         let body = json!({ "url": upload.url, "sha256": upload.sha256, "sizeBytes": upload.size, "mimeType": mime });
         let link_name = format!("media.{ext}");
         let result = json!({
@@ -365,8 +456,13 @@ impl AppState {
             ],
             "isError": false
         });
-        if let Err(e) = self.store.mark_terminal(&canonical, store::COMPLETED, Some(result.clone())) {
-            tracing::error!("COMPLETED record NOT persisted for {canonical} — a replay may re-invoice: {e:#}");
+        if let Err(e) = self
+            .store
+            .mark_terminal(&canonical, store::COMPLETED, Some(result.clone()))
+        {
+            tracing::error!(
+                "COMPLETED record NOT persisted for {canonical} — a replay may re-invoice: {e:#}"
+            );
         }
         self.store.inflight_remove(&canonical);
         let _ = std::fs::remove_dir_all(&out_dir);
@@ -393,14 +489,20 @@ pub fn download_media_tool() -> Value {
 }
 
 pub fn mcp_success(id: &Value, result: Value) -> contextvm_sdk::core::types::JsonRpcMessage {
-    contextvm_sdk::core::types::JsonRpcMessage::Response(contextvm_sdk::core::types::JsonRpcResponse {
-        jsonrpc: "2.0".into(),
-        id: id.clone(),
-        result,
-    })
+    contextvm_sdk::core::types::JsonRpcMessage::Response(
+        contextvm_sdk::core::types::JsonRpcResponse {
+            jsonrpc: "2.0".into(),
+            id: id.clone(),
+            result,
+        },
+    )
 }
 
-pub fn mcp_error(id: &Value, code: i64, message: &str) -> contextvm_sdk::core::types::JsonRpcMessage {
+pub fn mcp_error(
+    id: &Value,
+    code: i64,
+    message: &str,
+) -> contextvm_sdk::core::types::JsonRpcMessage {
     contextvm_sdk::core::types::JsonRpcMessage::ErrorResponse(
         contextvm_sdk::core::types::JsonRpcErrorResponse {
             jsonrpc: "2.0".into(),
@@ -418,22 +520,40 @@ fn tool_error(id: &Value, code: &str, message: &str) -> contextvm_sdk::core::typ
     mcp_success(id, store::error_result(code, message))
 }
 
-fn progress_notification(json_rpc_id: &Value, status: &str) -> contextvm_sdk::core::types::JsonRpcMessage {
-    contextvm_sdk::core::types::JsonRpcMessage::Notification(contextvm_sdk::core::types::JsonRpcNotification {
-        jsonrpc: "2.0".into(),
-        method: "notifications/progress".into(),
-        params: Some(json!({ "progressToken": json_rpc_id, "status": status })),
-    })
+fn progress_notification(
+    json_rpc_id: &Value,
+    status: &str,
+) -> contextvm_sdk::core::types::JsonRpcMessage {
+    contextvm_sdk::core::types::JsonRpcMessage::Notification(
+        contextvm_sdk::core::types::JsonRpcNotification {
+            jsonrpc: "2.0".into(),
+            method: "notifications/progress".into(),
+            params: Some(json!({ "progressToken": json_rpc_id, "status": status })),
+        },
+    )
 }
 
 fn sanitize(s: &str) -> String {
-    s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).take(64).collect()
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect()
 }
 
 fn is_auth_failure(msg: &str) -> bool {
     let l = msg.to_lowercase();
-    l.contains("http error 403") || l.contains("http error 401") || l.contains("sign in")
-        || l.contains("login required") || l.contains("authentication") || l.contains("private video")
+    l.contains("http error 403")
+        || l.contains("http error 401")
+        || l.contains("sign in")
+        || l.contains("login required")
+        || l.contains("authentication")
+        || l.contains("private video")
         || (l.contains("cookies") && l.contains("required"))
 }
 

@@ -26,7 +26,10 @@ pub fn quote_sats(cfg: &Config, mode: &str) -> Option<i64> {
 
 /// Advertised cap range over the accepted modes.
 pub fn cap_range_sats(cfg: &Config) -> (i64, i64) {
-    let sats: Vec<i64> = ["audio", "full"].iter().filter_map(|m| quote_sats(cfg, m)).collect();
+    let sats: Vec<i64> = ["audio", "full"]
+        .iter()
+        .filter_map(|m| quote_sats(cfg, m))
+        .collect();
     if sats.is_empty() {
         (0, 0)
     } else {
@@ -68,7 +71,9 @@ impl ResolvePrice for Quoter {
                 } else {
                     "a previous attempt of this exact request was interrupted; change the request to retry"
                 };
-                return Ok(ResolvePriceResult::Reject { message: Some(reason.into()) });
+                return Ok(ResolvePriceResult::Reject {
+                    message: Some(reason.into()),
+                });
             }
         }
 
@@ -85,8 +90,16 @@ impl ResolvePrice for Quoter {
             .and_then(|p| p.get("arguments"))
             .cloned()
             .unwrap_or(Value::Null);
-        let mode = args.get("mode").and_then(|m| m.as_str()).unwrap_or("").to_lowercase();
-        let url = args.get("url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+        let mode = args
+            .get("mode")
+            .and_then(|m| m.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let url = args
+            .get("url")
+            .and_then(|u| u.as_str())
+            .unwrap_or("")
+            .to_string();
 
         let Some(amount) = quote_sats(&cfg, &mode) else {
             return Ok(ResolvePriceResult::Reject {
@@ -97,7 +110,9 @@ impl ResolvePrice for Quoter {
                 }),
             });
         };
-        if let Err(reason) = crate::media::check_source(&url, &cfg.allowed_platforms, &cfg.blocked_platforms) {
+        if let Err(reason) =
+            crate::media::check_source(&url, &cfg.allowed_platforms, &cfg.blocked_platforms)
+        {
             return Ok(ResolvePriceResult::Reject {
                 message: Some(format!("url rejected by worker safety policy: {reason}")),
             });
@@ -117,7 +132,11 @@ impl ResolvePrice for Quoter {
                 result: None,
                 updated_at: 0,
             })
-            .map_err(|e| contextvm_sdk::payments::errors::PaymentError::Processor(format!("cannot persist job record, refusing invoice: {e:#}")))?;
+            .map_err(|e| {
+                contextvm_sdk::payments::errors::PaymentError::Processor(format!(
+                    "cannot persist job record, refusing invoice: {e:#}"
+                ))
+            })?;
         Ok(ResolvePriceResult::Quote {
             amount,
             description: Some(format!("hench download_media ({mode})")),
@@ -148,7 +167,10 @@ mod tests {
 
     #[test]
     fn quote_matches_mode_gates() {
-        let cfg = Config { accept_audio: false, ..Config::default() };
+        let cfg = Config {
+            accept_audio: false,
+            ..Config::default()
+        };
         assert!(quote_sats(&cfg, "audio").is_none());
         assert!(quote_sats(&cfg, "full").unwrap() > 0);
     }

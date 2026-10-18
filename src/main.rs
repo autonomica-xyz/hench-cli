@@ -19,7 +19,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 fn home() -> PathBuf {
-    std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."))
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 /// Load or create the worker secret key (hex, 0600 from creation).
@@ -51,7 +53,8 @@ fn load_key(data_dir: &std::path::Path) -> anyhow::Result<contextvm_sdk::signer:
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse().unwrap()),
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("info".parse().unwrap()),
         )
         .init();
 
@@ -62,7 +65,14 @@ async fn main() -> anyhow::Result<()> {
     let keys = load_key(&data_dir)?;
 
     let mut cfg = config::load(&data_dir, free);
-    if !free && cfg.nwc_uri.as_deref().map(str::trim).unwrap_or("").is_empty() {
+    if !free
+        && cfg
+            .nwc_uri
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+    {
         // First run in paid mode without a wallet: hold the worker off until
         // one is configured in the dashboard (or HENCH_NWC_URI on next start).
         cfg.enabled = false;
@@ -79,16 +89,32 @@ async fn main() -> anyhow::Result<()> {
         startup: std::time::Instant::now(),
     });
 
-    println!("hench-cli worker  npub={}  hex={}", state.npub(), state.keys.public_key().to_hex());
+    println!(
+        "hench-cli worker  npub={}  hex={}",
+        state.npub(),
+        state.keys.public_key().to_hex()
+    );
     println!("  data dir: {}", data_dir.display());
-    println!("  mode:     {}", if free { "FREE (unpaid, testing)".into() } else { "paid via NWC".to_string() });
+    println!(
+        "  mode:     {}",
+        if free {
+            "FREE (unpaid, testing)".into()
+        } else {
+            "paid via NWC".to_string()
+        }
+    );
     let bind = std::env::var("HENCH_DASH_BIND").unwrap_or_else(|_| "127.0.0.1:8932".into());
-    let token = std::env::var("HENCH_DASH_TOKEN").ok().filter(|s| !s.is_empty());
+    let token = std::env::var("HENCH_DASH_TOKEN")
+        .ok()
+        .filter(|s| !s.is_empty());
     let loopback = http::loopback_bind(&bind);
     if !loopback && token.is_none() {
         anyhow::bail!("HENCH_DASH_BIND={bind} is not loopback — set HENCH_DASH_TOKEN");
     }
-    println!("  dashboard: http://{bind}{}", token.as_ref().map(|_| " (token required)").unwrap_or(""));
+    println!(
+        "  dashboard: http://{bind}{}",
+        token.as_ref().map(|_| " (token required)").unwrap_or("")
+    );
     // Bind before the worker starts: an occupied port or bad address must
     // fail startup, not leave a silently headless process running.
     use anyhow::Context;

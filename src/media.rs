@@ -70,7 +70,9 @@ fn host_resolves_public(host: &str) -> Result<(), String> {
         return Err(format!("DNS resolution failed for {host}"));
     }
     if addrs.iter().any(|a| ip_is_private(&a.ip())) {
-        return Err(format!("host {host} resolves to a private/loopback address"));
+        return Err(format!(
+            "host {host} resolves to a private/loopback address"
+        ));
     }
     Ok(())
 }
@@ -78,7 +80,11 @@ fn host_resolves_public(host: &str) -> Result<(), String> {
 /// Network-safety validation of the source URL (deny-by-default, ported from
 /// hench UrlSafety.checkSource + WorkerSettings.acceptsUrl): http(s) only,
 /// known extractor domain, platform allow/block, public DNS.
-pub fn check_source(url: &str, allowed_platforms: &[String], blocked_platforms: &[String]) -> Result<(), String> {
+pub fn check_source(
+    url: &str,
+    allowed_platforms: &[String],
+    blocked_platforms: &[String],
+) -> Result<(), String> {
     let parsed = url::Url::parse(url).map_err(|_| "unparseable URL".to_string())?;
     let scheme = parsed.scheme();
     if scheme != "http" && scheme != "https" {
@@ -88,7 +94,8 @@ pub fn check_source(url: &str, allowed_platforms: &[String], blocked_platforms: 
         .host_str()
         .ok_or_else(|| "no host".to_string())?
         .to_lowercase();
-    let platform = platform_for_host(&host).ok_or_else(|| format!("no extractor for host {host}"))?;
+    let platform =
+        platform_for_host(&host).ok_or_else(|| format!("no extractor for host {host}"))?;
     if !platform_accepted(platform, allowed_platforms, blocked_platforms) {
         return Err(format!("platform '{platform}' not accepted by this worker"));
     }
@@ -111,7 +118,13 @@ pub fn check_blossom(server: &str, allowlist: &[String]) -> Result<(), String> {
 }
 
 pub fn mime_for(path: &Path) -> &'static str {
-    match path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
         "mp4" => "video/mp4",
         "webm" => "video/webm",
         "mp3" => "audio/mpeg",
@@ -175,7 +188,9 @@ pub async fn run_ytdlp(
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let mut child = cmd.spawn().map_err(|e| format!("failed to spawn {ytdlp}: {e} (is yt-dlp installed?)"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to spawn {ytdlp}: {e} (is yt-dlp installed?)"))?;
 
     const STDERR_CAP: usize = 1024;
     let stderr = child.stderr.take();
@@ -195,13 +210,12 @@ pub async fn run_ytdlp(
         }
         buf
     };
-    let (status, mut bytes) = match tokio::time::timeout(budget, async {
-        tokio::join!(child.wait(), collect)
-    }).await {
-        Ok((Ok(status), bytes)) => (status, bytes),
-        Ok((Err(e), _)) => return Err(format!("yt-dlp wait failed: {e}")),
-        Err(_) => return Err(format!("execution timed out after {}s", budget.as_secs())),
-    };
+    let (status, mut bytes) =
+        match tokio::time::timeout(budget, async { tokio::join!(child.wait(), collect) }).await {
+            Ok((Ok(status), bytes)) => (status, bytes),
+            Ok((Err(e), _)) => return Err(format!("yt-dlp wait failed: {e}")),
+            Err(_) => return Err(format!("execution timed out after {}s", budget.as_secs())),
+        };
     if !status.success() {
         let err = String::from_utf8_lossy(bytes.make_contiguous());
         return Err(format!("yt-dlp exited {status}: {err}"));
@@ -226,7 +240,6 @@ pub async fn run_ytdlp(
         .ok_or_else(|| "yt-dlp produced no output file".to_string())
 }
 
-
 pub struct Upload {
     pub url: String,
     pub sha256: String,
@@ -242,12 +255,14 @@ fn blossom_auth_header(server: &str, sha256_hex: &str, keys: &Keys) -> Result<St
     let event = EventBuilder::new(Kind::Custom(24242), "Upload Blob")
         .tags([
             Tag::custom("t", ["upload"]),
-            Tag::expiration(Timestamp::from_secs(Timestamp::now().as_secs().saturating_add(600))),
+            Tag::expiration(Timestamp::from_secs(
+                Timestamp::now().as_secs().saturating_add(600),
+            )),
             Tag::custom("server", [domain]),
             Tag::custom("x", [sha256_hex.to_lowercase()]),
         ])
         .finalize(keys)
-    .map_err(|e| format!("auth event signing failed: {e}"))?;
+        .map_err(|e| format!("auth event signing failed: {e}"))?;
     let json = serde_json::to_string(&event).map_err(|e| e.to_string())?;
     use base64::Engine;
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json);
@@ -262,7 +277,9 @@ pub async fn blossom_upload(
     keys: &Keys,
 ) -> Result<Upload, String> {
     let mut hasher = Sha256::new();
-    let mut f = tokio::fs::File::open(file).await.map_err(|e| e.to_string())?;
+    let mut f = tokio::fs::File::open(file)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut buf = [0u8; 64 * 1024];
     loop {
         let n = f.read(&mut buf).await.map_err(|e| e.to_string())?;
@@ -280,7 +297,9 @@ pub async fn blossom_upload(
         let url = format!("{}/upload", server.trim_end_matches('/'));
         let auth = blossom_auth_header(server, &sha256_hex, keys)?;
         // ponytail: re-open and stream the file per server; retries are rare, buffering 500 MB blobs in RAM is worse.
-        let f = tokio::fs::File::open(file).await.map_err(|e| e.to_string())?;
+        let f = tokio::fs::File::open(file)
+            .await
+            .map_err(|e| e.to_string())?;
         let stream = tokio_util::io::ReaderStream::with_capacity(f, 1024 * 1024);
         let body = reqwest::Body::wrap_stream(stream);
         let resp = client
@@ -293,7 +312,10 @@ pub async fn blossom_upload(
             .await;
         match resp {
             Ok(r) if r.status().is_success() => {
-                let json: serde_json::Value = r.json().await.map_err(|e| format!("blossom response parse failed: {e}"))?;
+                let json: serde_json::Value = r
+                    .json()
+                    .await
+                    .map_err(|e| format!("blossom response parse failed: {e}"))?;
                 let uploaded = json
                     .get("url")
                     .and_then(|v| v.as_str())
@@ -301,12 +323,19 @@ pub async fn blossom_upload(
                     .to_string();
                 // A malicious/misconfigured server can echo an internal or
                 // cleartext URL for our bytes; only return https URLs.
-                if url::Url::parse(&uploaded).map(|u| u.scheme() != "https").unwrap_or(true) {
+                if url::Url::parse(&uploaded)
+                    .map(|u| u.scheme() != "https")
+                    .unwrap_or(true)
+                {
                     last_err = format!("{server}: unsafe blob url returned");
                     tracing::warn!("blossom server {server} returned a non-https url, skipping");
                     continue;
                 }
-                return Ok(Upload { url: uploaded, sha256: sha256_hex, size });
+                return Ok(Upload {
+                    url: uploaded,
+                    sha256: sha256_hex,
+                    size,
+                });
             }
             Ok(r) => {
                 let reason = r
@@ -349,7 +378,15 @@ mod tests {
 
     #[test]
     fn well_known_private_ranges_blocked() {
-        for ip in ["127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0"] {
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+        ] {
             assert!(ip_is_private(&ip.parse().unwrap()), "{ip}");
         }
         for ip in ["::1", "fc00::1", "fe80::1"] {
@@ -367,15 +404,37 @@ mod tests {
         let executable = dir.join("downloader");
         let output = dir.join("output");
         let prefix = "#!/bin/sh\nset -e\nwhile [ \"$1\" != '-o' ]; do shift; done\nshift\noutdir=${1%/*}\ndd if=/dev/zero bs=4096 count=32 2>/dev/null | tr '\\000' x >&2\n";
-        std::fs::write(&executable, format!("{prefix}printf artifact > \"$outdir/result.mp3\"\n")).unwrap();
+        std::fs::write(
+            &executable,
+            format!("{prefix}printf artifact > \"$outdir/result.mp3\"\n"),
+        )
+        .unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let artifact = run_ytdlp(executable.to_str().unwrap(), "https://example.invalid/video", true, &output, std::time::Duration::from_secs(5))
-            .await.unwrap();
+        let artifact = run_ytdlp(
+            executable.to_str().unwrap(),
+            "https://example.invalid/video",
+            true,
+            &output,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
         assert_eq!(std::fs::read(artifact).unwrap(), b"artifact");
 
-        std::fs::write(&executable, format!("{prefix}printf '\\nFINAL_DOWNLOAD_ERROR\\n' >&2\nexit 1\n")).unwrap();
-        let error = run_ytdlp(executable.to_str().unwrap(), "https://example.invalid/video", true, &output, std::time::Duration::from_secs(5))
-            .await.unwrap_err();
+        std::fs::write(
+            &executable,
+            format!("{prefix}printf '\\nFINAL_DOWNLOAD_ERROR\\n' >&2\nexit 1\n"),
+        )
+        .unwrap();
+        let error = run_ytdlp(
+            executable.to_str().unwrap(),
+            "https://example.invalid/video",
+            true,
+            &output,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
         assert!(error.contains("FINAL_DOWNLOAD_ERROR"), "{error}");
         std::fs::remove_dir_all(dir).unwrap();
     }

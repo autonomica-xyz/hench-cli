@@ -5,18 +5,51 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 pub const PLATFORMS: &[(&str, &[&str])] = &[
-    ("youtube", &["youtube.com", "youtu.be", "m.youtube.com", "music.youtube.com"]),
-    ("tiktok", &["tiktok.com", "www.tiktok.com", "vm.tiktok.com", "m.tiktok.com"]),
+    (
+        "youtube",
+        &[
+            "youtube.com",
+            "youtu.be",
+            "m.youtube.com",
+            "music.youtube.com",
+        ],
+    ),
+    (
+        "tiktok",
+        &[
+            "tiktok.com",
+            "www.tiktok.com",
+            "vm.tiktok.com",
+            "m.tiktok.com",
+        ],
+    ),
     ("instagram", &["instagram.com", "www.instagram.com"]),
     ("twitter", &["twitter.com", "x.com", "mobile.twitter.com"]),
-    ("facebook", &["facebook.com", "www.facebook.com", "m.facebook.com", "fb.watch"]),
-    ("reddit", &["reddit.com", "www.reddit.com", "old.reddit.com"]),
+    (
+        "facebook",
+        &[
+            "facebook.com",
+            "www.facebook.com",
+            "m.facebook.com",
+            "fb.watch",
+        ],
+    ),
+    (
+        "reddit",
+        &["reddit.com", "www.reddit.com", "old.reddit.com"],
+    ),
     ("vimeo", &["vimeo.com", "player.vimeo.com"]),
     ("soundcloud", &["soundcloud.com", "api.soundcloud.com"]),
     ("bilibili", &["bilibili.com", "www.bilibili.com", "b23.tv"]),
     ("dailymotion", &["dailymotion.com", "www.dailymotion.com"]),
-    ("pinterest", &["pinterest.com", "www.pinterest.com", "pin.it"]),
-    ("snapchat", &["snapchat.com", "story.snapchat.com", "t.snapchat.com"]),
+    (
+        "pinterest",
+        &["pinterest.com", "www.pinterest.com", "pin.it"],
+    ),
+    (
+        "snapchat",
+        &["snapchat.com", "story.snapchat.com", "t.snapchat.com"],
+    ),
 ];
 
 pub fn platform_names() -> Vec<&'static str> {
@@ -120,9 +153,12 @@ fn default_name() -> String {
 }
 
 fn env_list(key: &str) -> Option<Vec<String>> {
-    std::env::var(key)
-        .ok()
-        .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+    std::env::var(key).ok().map(|v| {
+        v.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    })
 }
 
 fn env_parse<T: std::str::FromStr>(key: &str) -> Option<T> {
@@ -143,17 +179,31 @@ pub fn load(data_dir: &Path, free: bool) -> Config {
         tracing::warn!("config.json unreadable, using defaults");
     }
     let mut cfg = Config {
-        nwc_uri: std::env::var("HENCH_NWC_URI").ok().filter(|s| !s.is_empty()),
+        nwc_uri: std::env::var("HENCH_NWC_URI")
+            .ok()
+            .filter(|s| !s.is_empty()),
         name: std::env::var("HENCH_NAME").unwrap_or_else(|_| default_name()),
-        relays: env_list("HENCH_RELAYS").filter(|l| !l.is_empty()).unwrap_or_default(),
-        blossom: env_list("HENCH_BLOSSOM").filter(|l| !l.is_empty()).unwrap_or_default(),
+        relays: env_list("HENCH_RELAYS")
+            .filter(|l| !l.is_empty())
+            .unwrap_or_default(),
+        blossom: env_list("HENCH_BLOSSOM")
+            .filter(|l| !l.is_empty())
+            .unwrap_or_default(),
         ytdlp: std::env::var("HENCH_YTDLP").unwrap_or_else(|_| "yt-dlp".into()),
         ..Config::default()
     };
-    if let Some(v) = env_parse("HENCH_BASE_MSAT") { cfg.base_msat = v; }
-    if let Some(v) = env_parse("HENCH_AUDIO_MSAT_HR") { cfg.audio_msat_per_hour = v; }
-    if let Some(v) = env_parse("HENCH_VIDEO_MSAT_HR") { cfg.video_msat_per_hour = v; }
-    if let Some(v) = env_parse("HENCH_MIN_BILLABLE_SECS") { cfg.min_billable_secs = v; }
+    if let Some(v) = env_parse("HENCH_BASE_MSAT") {
+        cfg.base_msat = v;
+    }
+    if let Some(v) = env_parse("HENCH_AUDIO_MSAT_HR") {
+        cfg.audio_msat_per_hour = v;
+    }
+    if let Some(v) = env_parse("HENCH_VIDEO_MSAT_HR") {
+        cfg.video_msat_per_hour = v;
+    }
+    if let Some(v) = env_parse("HENCH_MIN_BILLABLE_SECS") {
+        cfg.min_billable_secs = v;
+    }
     cfg
 }
 
@@ -175,7 +225,14 @@ pub fn validate(cfg: &Config, free: bool) -> Vec<String> {
         if !cfg.blossom.iter().any(|b| !b.trim().is_empty()) {
             issues.push("at least one Blossom server is required".into());
         }
-        if !free && cfg.nwc_uri.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        if !free
+            && cfg
+                .nwc_uri
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+        {
             issues.push("an NWC wallet URI is required (or run with HENCH_FREE=1)".into());
         }
     }
@@ -209,7 +266,11 @@ pub fn validate(cfg: &Config, free: bool) -> Vec<String> {
         }
     }
     let known = platform_names();
-    for p in cfg.allowed_platforms.iter().chain(cfg.blocked_platforms.iter()) {
+    for p in cfg
+        .allowed_platforms
+        .iter()
+        .chain(cfg.blocked_platforms.iter())
+    {
         if !known.contains(&p.as_str()) {
             issues.push(format!("unknown platform '{p}'"));
         }
