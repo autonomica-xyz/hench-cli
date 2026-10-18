@@ -365,6 +365,7 @@ mod tests {
             data_dir: dir.clone(),
             free: true,
             keys: nostr_sdk::prelude::Keys::generate(),
+            tools: crate::tools::default_registry(),
             config: Arc::new(RwLock::new(Config::default())),
             store: Arc::new(crate::store::JobStore::open(&dir).unwrap()),
             http: crate::state::upload_http_client(),

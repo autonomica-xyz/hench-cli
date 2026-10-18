@@ -427,4 +427,36 @@ mod tests {
         assert!(store.get("c9").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn legacy_jobs_json_loads_unchanged() {
+        // On-disk compatibility contract: a jobs.json written by the current
+        // format (camelCase JobRecord fields inside Data's `jobs` array)
+        // loads via JobStore::open and get() returns the record unchanged.
+        // The JSON literal below is hand-written, not produced by serde.
+        let dir = std::env::temp_dir().join(format!("hench-store-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("jobs.json"),
+            r#"{"jobs":[{"canonicalId":"pk:abc123","status":"COMPLETED","amountMsat":10000,"url":"https://x.com/x/status/1","mode":"audio","client":"aa","result":{"content":[{"type":"text","text":"done"}],"isError":false},"updatedAt":1700000000}]}"#,
+        )
+        .unwrap();
+        let store = JobStore::open(&dir).unwrap();
+        let record = store.get("pk:abc123").expect("legacy record loads");
+        assert_eq!(record.status, "COMPLETED");
+        assert_eq!(record.amount_msat, 10_000);
+        assert_eq!(record.url, "https://x.com/x/status/1");
+        assert_eq!(record.mode, "audio");
+        assert_eq!(record.client, "aa");
+        assert_eq!(
+            record.result,
+            Some(serde_json::json!({
+                "content": [{ "type": "text", "text": "done" }],
+                "isError": false
+            }))
+        );
+        assert_eq!(record.updated_at, 1_700_000_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

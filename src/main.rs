@@ -13,6 +13,7 @@ mod nwc;
 mod pricing;
 mod state;
 mod store;
+mod tools;
 
 use state::AppState;
 use std::path::PathBuf;
@@ -81,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
         data_dir: data_dir.clone(),
         free,
         keys,
+        tools: tools::default_registry(),
         config: Arc::new(RwLock::new(cfg.clone())),
         store: Arc::new(store::JobStore::open(&data_dir)?),
         http: state::upload_http_client(),
