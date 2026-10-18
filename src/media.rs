@@ -309,6 +309,9 @@ pub async fn blossom_upload(
             .put(&url)
             .header("X-SHA-256", &sha256_hex)
             .header(reqwest::header::CONTENT_TYPE, mime)
+            // A streamed body is sent chunked unless the length is declared;
+            // BUD-02 servers may require Content-Length (seen in e2e).
+            .header(reqwest::header::CONTENT_LENGTH, size)
             .header(reqwest::header::AUTHORIZATION, auth)
             .body(body)
             .send()
@@ -362,6 +365,44 @@ pub async fn blossom_upload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn blossom_upload_declares_content_length() {
+        // Regression (seen against a real BUD-02 server in e2e): the streamed
+        // body went out chunked with no Content-Length and was refused.
+        use axum::http::{header, HeaderMap, StatusCode};
+        async fn upload(headers: HeaderMap, body: axum::body::Bytes) -> (StatusCode, String) {
+            let declared = headers
+                .get(header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<usize>().ok());
+            if declared != Some(body.len()) || headers.contains_key(header::TRANSFER_ENCODING) {
+                return (StatusCode::LENGTH_REQUIRED, "missing Content-Length".into());
+            }
+            (
+                StatusCode::OK,
+                serde_json::json!({ "url": "https://cdn.example.com/blob" }).to_string(),
+            )
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = axum::Router::new().route("/upload", axum::routing::put(upload));
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let dir = std::env::temp_dir().join(format!("hench-blossom-cl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("blob.txt");
+        std::fs::write(&file, b"hello blossom").unwrap();
+        let up = blossom_upload(
+            &reqwest::Client::new(),
+            &[format!("http://{addr}/")],
+            &file,
+            &Keys::generate(),
+        )
+        .await
+        .expect("upload with Content-Length");
+        assert_eq!(up.size, 13);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use std::net::Ipv6Addr;
 
     #[test]
