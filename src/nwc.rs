@@ -4,15 +4,16 @@ use contextvm_sdk::payments::constants::PMI_BITCOIN_LIGHTNING_BOLT11;
 use contextvm_sdk::payments::errors::PaymentError;
 use contextvm_sdk::payments::traits::PaymentProcessor;
 use contextvm_sdk::payments::types::{
-    PaymentProcessorCreateParams, PaymentProcessorVerifyParams, PaymentRequiredParams, VerifyOutcome,
+    PaymentProcessorCreateParams, PaymentProcessorVerifyParams, PaymentRequiredParams,
+    VerifyOutcome,
 };
+use futures::StreamExt;
 use nostr::nips::nip47::{
     LookupInvoiceRequest, MakeInvoiceRequest, Method, Nip47Ciphers, NostrWalletConnectUri, Request,
     Response, ResponseResult, TransactionState,
 };
 use nostr::prelude::{Event, Filter, Keys, Kind};
 use nostr_sdk::prelude::{Client, ClientNotification};
-use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -127,9 +128,15 @@ impl NwcWallet {
         let event = req.to_event(&self.uri, Nip47Ciphers::NIP04)?;
         let req_id = event.id.to_hex();
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(req_id.clone(), (method, tx));
+        self.pending
+            .lock()
+            .unwrap()
+            .insert(req_id.clone(), (method, tx));
         // Drop also cleans up a failed publication or a cancelled caller.
-        let _pending = PendingRequest { wallet: self, id: req_id };
+        let _pending = PendingRequest {
+            wallet: self,
+            id: req_id,
+        };
         self.client.send_event(&event).await?;
         match tokio::time::timeout(Duration::from_secs(30), rx).await {
             Ok(Ok(resp)) => Ok(resp),
@@ -140,7 +147,11 @@ impl NwcWallet {
     }
 
     /// Create a bolt11 invoice. Returns (bolt11, payment_hash).
-    pub async fn make_invoice(&self, amount_msat: u64, description: &str) -> anyhow::Result<(String, String)> {
+    pub async fn make_invoice(
+        &self,
+        amount_msat: u64,
+        description: &str,
+    ) -> anyhow::Result<(String, String)> {
         let req = Request::make_invoice(MakeInvoiceRequest {
             amount: amount_msat,
             description: Some(description.to_string()),
@@ -180,7 +191,9 @@ impl NwcWallet {
                 // state for a DIFFERENT invoice must never authorize this job.
                 if let Some(invoice) = r.invoice.as_deref() {
                     if !invoice.eq_ignore_ascii_case(bolt11) {
-                        tracing::warn!("NWC lookup_invoice returned a different invoice — not ours");
+                        tracing::warn!(
+                            "NWC lookup_invoice returned a different invoice — not ours"
+                        );
                         return Ok(false);
                     }
                 }
@@ -331,7 +344,10 @@ mod tests {
             .finalize(&attacker)
             .unwrap();
         wallet.deliver(&forged).await;
-        assert!(rx.try_recv().is_err(), "attacker-authored response must not fulfill a request");
+        assert!(
+            rx.try_recv().is_err(),
+            "attacker-authored response must not fulfill a request"
+        );
 
         // Wallet-authored but not addressed to us (missing p tag): dropped.
         let ct = nostr::nips::nip04::encrypt(
@@ -345,7 +361,10 @@ mod tests {
             .finalize(&wallet_keys)
             .unwrap();
         wallet.deliver(&wrong_recipient).await;
-        assert!(rx.try_recv().is_err(), "response must carry our pubkey in p tag");
+        assert!(
+            rx.try_recv().is_err(),
+            "response must carry our pubkey in p tag"
+        );
 
         // Wallet-signed reply to a request we never sent: nothing pending.
         let ghost_id = "22".repeat(32);

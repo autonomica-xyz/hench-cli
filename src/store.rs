@@ -36,7 +36,10 @@ pub(crate) fn ensure_dir_private(dir: &std::path::Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
         // Pre-existing dirs (or shared umask corners) get tightened too.
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
     }
@@ -125,7 +128,10 @@ impl JobStore {
         for job in data.jobs.iter_mut() {
             if job.status == WAITING {
                 job.status = FAILED.into();
-                job.result = Some(error_result("INTERRUPTED", "worker restarted during execution"));
+                job.result = Some(error_result(
+                    "INTERRUPTED",
+                    "worker restarted during execution",
+                ));
                 job.updated_at = now();
             }
         }
@@ -187,7 +193,14 @@ impl JobStore {
             j.status != WAITING || j.updated_at > cutoff || inflight.contains(&j.canonical_id)
         });
         drop(inflight);
-        if data.jobs.iter().filter(|j| j.status == WAITING).take(MAX_FRESH_UNPAID + 1).count() > MAX_FRESH_UNPAID {
+        if data
+            .jobs
+            .iter()
+            .filter(|j| j.status == WAITING)
+            .take(MAX_FRESH_UNPAID + 1)
+            .count()
+            > MAX_FRESH_UNPAID
+        {
             data.jobs.retain(|j| j.canonical_id != canonical);
             anyhow::bail!("too many pending invoices");
         }
@@ -204,9 +217,18 @@ impl JobStore {
     /// Transition to a terminal state and commit durably. On failure the
     /// in-memory record still lands (the live request deserves its answer)
     /// but the error is reported so data loss is never silent.
-    pub fn mark_terminal(&self, canonical_id: &str, status: &str, result: Option<Value>) -> anyhow::Result<()> {
+    pub fn mark_terminal(
+        &self,
+        canonical_id: &str,
+        status: &str,
+        result: Option<Value>,
+    ) -> anyhow::Result<()> {
         let mut data = self.data.lock().unwrap();
-        if let Some(job) = data.jobs.iter_mut().find(|j| j.canonical_id == canonical_id) {
+        if let Some(job) = data
+            .jobs
+            .iter_mut()
+            .find(|j| j.canonical_id == canonical_id)
+        {
             job.status = status.to_string();
             job.result = result;
             job.updated_at = now();
@@ -218,20 +240,32 @@ impl JobStore {
 
     /// Latest N jobs for the dashboard.
     pub fn recent(&self, n: usize) -> Vec<JobRecord> {
-        self.data.lock().unwrap().jobs.iter().take(n).cloned().collect()
+        self.data
+            .lock()
+            .unwrap()
+            .jobs
+            .iter()
+            .take(n)
+            .cloned()
+            .collect()
     }
 
     pub fn stats(&self) -> (u64, u64, u64) {
         // (earned_msat, completed, failed)
-        self.data.lock().unwrap().jobs.iter().fold((0, 0, 0), |(msat, c, f), j| {
-            if j.status == COMPLETED {
-                (msat.saturating_add(j.amount_msat.max(0) as u64), c + 1, f)
-            } else if j.status == FAILED {
-                (msat, c, f + 1)
-            } else {
-                (msat, c, f)
-            }
-        })
+        self.data
+            .lock()
+            .unwrap()
+            .jobs
+            .iter()
+            .fold((0, 0, 0), |(msat, c, f), j| {
+                if j.status == COMPLETED {
+                    (msat.saturating_add(j.amount_msat.max(0) as u64), c + 1, f)
+                } else if j.status == FAILED {
+                    (msat, c, f + 1)
+                } else {
+                    (msat, c, f)
+                }
+            })
     }
 
     pub fn inflight(&self, canonical_id: &str) -> bool {
@@ -239,7 +273,10 @@ impl JobStore {
     }
 
     pub fn inflight_add(&self, canonical_id: &str) -> bool {
-        self.inflight.lock().unwrap().insert(canonical_id.to_string())
+        self.inflight
+            .lock()
+            .unwrap()
+            .insert(canonical_id.to_string())
     }
 
     pub fn inflight_remove(&self, canonical_id: &str) {
@@ -302,7 +339,13 @@ mod tests {
         let store = JobStore::open(&dir).unwrap();
         store.mark_waiting(rec("c3", WAITING)).unwrap();
         assert!(!store.is_terminal("c3"));
-        store.mark_terminal("c3", COMPLETED, Some(serde_json::json!({"content":[],"isError":false}))).unwrap();
+        store
+            .mark_terminal(
+                "c3",
+                COMPLETED,
+                Some(serde_json::json!({"content":[],"isError":false})),
+            )
+            .unwrap();
         assert!(store.is_terminal("c3"));
         let (earned, done, failed) = store.stats();
         assert_eq!((earned, done, failed), (10_000, 1, 0));
@@ -319,7 +362,8 @@ mod tests {
         let store = JobStore::open(&dir).unwrap();
         store.mark_waiting(rec("paid", WAITING)).unwrap();
         store.mark_terminal("paid", COMPLETED, None).unwrap();
-        for i in 0..250 { // > the old 200-record cap that used to evict this paid record
+        for i in 0..250 {
+            // > the old 200-record cap that used to evict this paid record
             store.mark_waiting(rec(&format!("u{i}"), WAITING)).unwrap();
         }
         assert!(store.is_terminal("paid"));
@@ -336,23 +380,32 @@ mod tests {
 
     #[test]
     fn invoice_admission_preserves_live_quotes_and_running_jobs() {
-        let dir = std::env::temp_dir().join(format!("hench-store-admission-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("hench-store-admission-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = JobStore::open(&dir).unwrap();
         {
             let mut data = store.data.lock().unwrap();
-            data.jobs = (0..MAX_FRESH_UNPAID).map(|i| {
-                let mut job = rec(&format!("live-{i}"), WAITING);
-                job.updated_at = now();
-                job
-            }).collect();
+            data.jobs = (0..MAX_FRESH_UNPAID)
+                .map(|i| {
+                    let mut job = rec(&format!("live-{i}"), WAITING);
+                    job.updated_at = now();
+                    job
+                })
+                .collect();
             data.jobs[0].updated_at = 1;
             store.persist(&data).unwrap();
         }
         store.inflight_add("live-0");
         assert!(store.mark_waiting(rec("overflow", WAITING)).is_err());
         assert_eq!(store.get("live-0").unwrap().status, WAITING);
-        assert_eq!(store.get(&format!("live-{}", MAX_FRESH_UNPAID - 1)).unwrap().status, WAITING);
+        assert_eq!(
+            store
+                .get(&format!("live-{}", MAX_FRESH_UNPAID - 1))
+                .unwrap()
+                .status,
+            WAITING
+        );
         assert!(store.get("overflow").is_none());
         drop(store);
         let store = JobStore::open(&dir).unwrap();
@@ -372,6 +425,38 @@ mod tests {
         let store = JobStore::open(&dir).unwrap();
         assert!(store.mark_waiting(rec("c9", WAITING)).is_err());
         assert!(store.get("c9").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_jobs_json_loads_unchanged() {
+        // On-disk compatibility contract: a jobs.json written by the current
+        // format (camelCase JobRecord fields inside Data's `jobs` array)
+        // loads via JobStore::open and get() returns the record unchanged.
+        // The JSON literal below is hand-written, not produced by serde.
+        let dir = std::env::temp_dir().join(format!("hench-store-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("jobs.json"),
+            r#"{"jobs":[{"canonicalId":"pk:abc123","status":"COMPLETED","amountMsat":10000,"url":"https://x.com/x/status/1","mode":"audio","client":"aa","result":{"content":[{"type":"text","text":"done"}],"isError":false},"updatedAt":1700000000}]}"#,
+        )
+        .unwrap();
+        let store = JobStore::open(&dir).unwrap();
+        let record = store.get("pk:abc123").expect("legacy record loads");
+        assert_eq!(record.status, "COMPLETED");
+        assert_eq!(record.amount_msat, 10_000);
+        assert_eq!(record.url, "https://x.com/x/status/1");
+        assert_eq!(record.mode, "audio");
+        assert_eq!(record.client, "aa");
+        assert_eq!(
+            record.result,
+            Some(serde_json::json!({
+                "content": [{ "type": "text", "text": "done" }],
+                "isError": false
+            }))
+        );
+        assert_eq!(record.updated_at, 1_700_000_000);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
