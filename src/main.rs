@@ -82,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
         data_dir: data_dir.clone(),
         free,
         keys,
-        tools: tools::default_registry(),
+        tools: tools::registry_from_env(),
         config: Arc::new(RwLock::new(cfg.clone())),
         store: Arc::new(store::JobStore::open(&data_dir)?),
         http: state::upload_http_client(),

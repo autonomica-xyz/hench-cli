@@ -267,16 +267,10 @@ impl AppState {
             .map(|i| format!("{}:{}", i.client_pubkey, i.invocation_hash))
             .unwrap_or_else(|_| req.event_id.clone());
 
-        if let Some(record) = self.store.get(&canonical) {
-            if record.status == store::COMPLETED || record.status == store::FAILED {
-                let cached = record
-                    .result
-                    .clone()
-                    .unwrap_or_else(|| store::error_result("DOWNLOAD", "cached result missing"));
-                tracing::info!("serving cached result for {canonical}");
-                respond(mcp_success(id, cached)).await;
-                return Ok(());
-            }
+        if let Some(cached) = cached_terminal_result(&self.store, &canonical) {
+            tracing::info!("serving cached result for {canonical}");
+            respond(mcp_success(id, cached)).await;
+            return Ok(());
         }
 
         let cfg = self.config.read().unwrap().clone();
@@ -311,6 +305,24 @@ impl AppState {
         respond(msg).await;
         Ok(())
     }
+}
+
+/// The terminal-replay cache lookup behind handle_tool_call: a COMPLETED or
+/// FAILED record answers from its cached MCP result (the quoter waived the
+/// gate for the same record), so a repeat call is never re-run nor
+/// re-invoiced. A WAITING record — including a paid resumable one — returns
+/// None and falls through to the tool.
+pub(crate) fn cached_terminal_result(store: &store::JobStore, canonical: &str) -> Option<Value> {
+    let record = store.get(canonical)?;
+    if record.status != store::COMPLETED && record.status != store::FAILED {
+        return None;
+    }
+    Some(
+        record
+            .result
+            .clone()
+            .unwrap_or_else(|| store::error_result("DOWNLOAD", "cached result missing")),
+    )
 }
 
 fn progress_notification(

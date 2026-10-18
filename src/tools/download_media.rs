@@ -46,7 +46,7 @@ impl Tool for DownloadMedia {
         })
     }
 
-    fn quote(&self, cfg: &Config, args: &Value) -> QuoteDecision {
+    async fn quote(&self, cfg: &Config, args: &Value) -> QuoteDecision {
         let mode = args
             .get("mode")
             .and_then(|m| m.as_str())
@@ -148,6 +148,7 @@ impl Tool for DownloadMedia {
                 mode: mode.clone(),
                 client: ctx.client_pubkey.clone(),
                 result: None,
+                tool_state: None,
                 updated_at: 0,
             }) {
                 ctx.store.inflight_remove(&ctx.canonical);
