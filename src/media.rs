@@ -129,6 +129,9 @@ pub fn mime_for(path: &Path) -> &'static str {
         "webm" => "video/webm",
         "mp3" => "audio/mpeg",
         "m4a" => "audio/mp4",
+        // translate_segment writes translation.txt; yt-dlp never produces
+        // .txt, so download_media is unaffected by this arm.
+        "txt" => "text/plain",
         _ => "application/octet-stream",
     }
 }

@@ -100,6 +100,38 @@ The stderr pipe is drained throughout execution while retaining only its
 last 1 KiB for errors. The artifact is uploaded to the first Blossom server
 that accepts it and returned as text + `resource_link`.
 
+### translate_segment (optional, off by default)
+
+`translate_segment { text, source, target }` — one text segment (up to
+20,000 characters) translated by an external Sparehour workload queue
+(`translate-segment` / `libretranslate-v1`); the translated file is uploaded
+to Blossom and returned like any other artifact. It registers only when the
+`HENCH_SPAREHOUR_*` environment is complete, and is never enabled by a
+partial configuration:
+
+```sh
+export HENCH_SPAREHOUR_URL="https://sparehour.example/"   # http(s) API root
+export HENCH_SPAREHOUR_TOKEN="..."                        # or HENCH_SPAREHOUR_TOKEN_FILE=/path
+export HENCH_SPAREHOUR_PROJECT="my-project"
+export HENCH_SPAREHOUR_PRICE_SATS="21"                    # fixed price per segment
+# optional: HENCH_SPAREHOUR_ROUTE (default libretranslate-v1),
+#           HENCH_SPAREHOUR_MAX_PENDING (default 20),
+#           HENCH_SPAREHOUR_WAIT_SECS (default 240, clamped to 540)
+```
+
+The token needs client role scoped to the project/workload/route **and**
+`perms=dynamic` — the queue depth (`pending_jobs`) is only served to such
+tokens, and the worker refuses to sell work whose queue it cannot see.
+Payment semantics mirror the app's paid jobs: work is quoted only when the
+route is available and the queue is not busy; the paid marker plus the
+backend job id are persisted before/after submission, so a restart resumes
+the same job (a repeat call is waived and never re-invoiced — sparehour's
+idempotency key is the call's canonical id); a definitive backend failure
+after payment returns a cached error result (no refund), while a slow or
+briefly unavailable backend leaves the job collectable by repeating the
+exact same call. The token is env/file-only, never logged, and only ever
+sent to the configured base URL.
+
 ## Release readiness
 
 See the [cross-project release-readiness report](https://github.com/autonomica-xyz/hench/blob/main/docs/release-readiness.html)

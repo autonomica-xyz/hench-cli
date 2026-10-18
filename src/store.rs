@@ -15,6 +15,12 @@
 //! UNPAID_TTL_SECS, far beyond the 600 s invoice lifetime) are pruned, and
 //! writes propagate errors so callers can refuse to issue invoices without
 //! durable state.
+//!
+//! Resumable paid tools (see `tools/sparehour.rs`) additionally mark their
+//! WAITING records with `tool_state: {"paid": true}` before doing any
+//! backend work. Such a record is owed work: the startup sweep keeps it and
+//! the quoter waives its payment gate, so a restart resumes the job instead
+//! of re-invoicing or discarding it.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -93,7 +99,29 @@ pub struct JobRecord {
     /// Cached terminal MCP result (`{content, isError}`) for replays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    /// Tool-private state (e.g. the paid marker and backend job id of a
+    /// resumable paid tool). Optional and skipped when absent, so records
+    /// written by older builds load and re-serialize byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_state: Option<Value>,
     pub updated_at: u64,
+}
+
+/// True when a record's `tool_state` marks it as paid-for work (written by
+/// a resumable tool before its first backend call).
+pub fn tool_state_paid(state: Option<&Value>) -> bool {
+    state
+        .and_then(|s| s.get("paid"))
+        .and_then(|p| p.as_bool())
+        .unwrap_or(false)
+}
+
+impl JobRecord {
+    /// This record carries a paid marker: the job is owed and must survive
+    /// restarts to be resumed, never re-invoiced.
+    pub fn tool_paid(&self) -> bool {
+        tool_state_paid(self.tool_state.as_ref())
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -123,10 +151,15 @@ impl JobStore {
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
-        // Sweep: anything left WAITING by a previous process died with it.
-        let swept = data.jobs.iter().any(|j| j.status == WAITING);
+        // Sweep: anything left WAITING by a previous process died with it —
+        // except a resumable paid tool's record: its work is already paid
+        // for, so it survives for the handler to resume on the next call.
+        let swept = data
+            .jobs
+            .iter()
+            .any(|j| j.status == WAITING && !j.tool_paid());
         for job in data.jobs.iter_mut() {
-            if job.status == WAITING {
+            if job.status == WAITING && !job.tool_paid() {
                 job.status = FAILED.into();
                 job.result = Some(error_result(
                     "INTERRUPTED",
@@ -186,11 +219,16 @@ impl JobStore {
         );
         data.jobs.insert(0, rec);
         // Evict only unpaid quotes whose invoice window is long dead; paid
-        // and in-flight records are the durable idempotency ledger.
+        // and in-flight records are the durable idempotency ledger (the
+        // tool_paid marker covers WAITING records of resumable paid tools,
+        // which may legitimately outlive the invoice window).
         let cutoff = now().saturating_sub(UNPAID_TTL_SECS);
         let inflight = self.inflight.lock().unwrap();
         data.jobs.retain(|j| {
-            j.status != WAITING || j.updated_at > cutoff || inflight.contains(&j.canonical_id)
+            j.status != WAITING
+                || j.updated_at > cutoff
+                || inflight.contains(&j.canonical_id)
+                || j.tool_paid()
         });
         drop(inflight);
         if data
@@ -236,6 +274,25 @@ impl JobStore {
         } else {
             anyhow::bail!("no job record for {canonical_id}")
         }
+    }
+
+    /// Update a record's tool-private state (the paid marker / backend job
+    /// id of a resumable paid tool) and commit durably — the same write
+    /// path as [`JobStore::mark_terminal`]. Errors if the record is missing.
+    /// `updated_at` is refreshed like mark_terminal does, keeping a paid
+    /// WAITING record outside the stale-unpaid pruning window.
+    pub fn set_tool_state(&self, canonical_id: &str, tool_state: Value) -> anyhow::Result<()> {
+        let mut data = self.data.lock().unwrap();
+        let Some(job) = data
+            .jobs
+            .iter_mut()
+            .find(|j| j.canonical_id == canonical_id)
+        else {
+            anyhow::bail!("no job record for {canonical_id}")
+        };
+        job.tool_state = Some(tool_state);
+        job.updated_at = now();
+        self.persist(&data)
     }
 
     /// Latest N jobs for the dashboard.
@@ -305,6 +362,7 @@ mod tests {
             mode: "audio".into(),
             client: "aa".repeat(32),
             result: None,
+            tool_state: None,
             updated_at: 0,
         }
     }
@@ -457,6 +515,78 @@ mod tests {
             }))
         );
         assert_eq!(record.updated_at, 1_700_000_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn records_without_tool_state_serialize_byte_identically() {
+        // On-disk compatibility contract: a record without tool_state must
+        // round-trip byte-identically (the field is skipped, not null-ed),
+        // so jobs.json written by older builds is stable across upgrades.
+        let raw = r#"{"jobs":[{"canonicalId":"pk:abc","status":"FAILED","amountMsat":10000,"url":"https://x.com/x/status/1","mode":"audio","client":"aa","updatedAt":1700000000}]}"#;
+        let data: Data = serde_json::from_str(raw).unwrap();
+        assert!(data.jobs[0].tool_state.is_none());
+        assert_eq!(serde_json::to_string(&data).unwrap(), raw);
+    }
+
+    #[test]
+    fn startup_sweep_keeps_paid_waiting_records() {
+        // A WAITING record whose tool_state marks it paid is owed work: it
+        // must survive the restart sweep to be resumed (never re-invoiced).
+        // Records without the marker are swept exactly as before.
+        let dir = std::env::temp_dir().join(format!("hench-store-paid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut unpaid = rec("unpaid", WAITING);
+        unpaid.tool_state = None;
+        let mut paid = rec("paid", WAITING);
+        paid.tool_state = Some(serde_json::json!({
+            "paid": true,
+            "sparehour_job_id": "job_1"
+        }));
+        std::fs::write(
+            dir.join("jobs.json"),
+            serde_json::to_string(&Data {
+                jobs: vec![unpaid, paid],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let store = JobStore::open(&dir).unwrap();
+        assert_eq!(store.get("unpaid").unwrap().status, FAILED);
+        let kept = store.get("paid").unwrap();
+        assert_eq!(kept.status, WAITING);
+        assert_eq!(
+            kept.tool_state,
+            Some(serde_json::json!({"paid": true, "sparehour_job_id": "job_1"}))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_tool_state_persists_and_rejects_missing_records() {
+        let dir =
+            std::env::temp_dir().join(format!("hench-store-toolstate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = JobStore::open(&dir).unwrap();
+        assert!(store
+            .set_tool_state("missing", serde_json::json!({"paid": true}))
+            .is_err());
+        store.mark_waiting(rec("c4", WAITING)).unwrap();
+        store
+            .set_tool_state("c4", serde_json::json!({"paid": true}))
+            .unwrap();
+        assert_eq!(
+            store.get("c4").unwrap().tool_state,
+            Some(serde_json::json!({"paid": true}))
+        );
+        // Durable: a fresh handle over the same directory sees it too.
+        drop(store);
+        let store = JobStore::open(&dir).unwrap();
+        assert_eq!(
+            store.get("c4").unwrap().tool_state,
+            Some(serde_json::json!({"paid": true}))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -17,8 +17,10 @@ use serde_json::Value;
 use std::sync::Arc;
 
 pub mod download_media;
+pub mod sparehour;
 
 pub use download_media::DownloadMedia;
+pub use sparehour::{SparehourConfig, TranslateSegment};
 
 /// Sends a `notifications/progress` update (a status string such as
 /// "DOWNLOADING") to the requesting client mid-execution.
@@ -52,6 +54,7 @@ pub struct ToolCtx<'a> {
 
 /// The tool-specific outcome of price resolution: either a priced quote
 /// carrying the fields the job record persists, or a refusal reason.
+#[derive(Debug)]
 pub enum QuoteDecision {
     /// A price for this invocation plus the JobRecord fields to persist.
     Quote {
@@ -76,8 +79,17 @@ pub trait Tool: Send + Sync {
     /// per-mode pricing, and source-safety policy, returning the amount,
     /// invoice description, and the job-record fields to persist. The
     /// worker-generic parts (canonical id, replay waive/reject, hours,
-    /// durable-before-invoice persistence) stay in the quoter.
-    fn quote(&self, cfg: &Config, args: &Value) -> QuoteDecision;
+    /// durable-before-invoice persistence) stay in the quoter. Async so a
+    /// tool may consult its backend before selling work (it must fail
+    /// closed, never over-promise).
+    async fn quote(&self, cfg: &Config, args: &Value) -> QuoteDecision;
+    /// True for tools whose paid jobs can be resumed after an interruption:
+    /// their WAITING records carry a `tool_state` paid marker, survive the
+    /// startup sweep, and are waived through the payment gate on a repeat
+    /// call instead of being rejected as interrupted.
+    fn resumable(&self) -> bool {
+        false
+    }
     /// Execute one call end to end — argument validation, download, upload,
     /// result shaping, terminal persistence, inflight bookkeeping — and
     /// return the JSON-RPC message to send the client.
@@ -91,6 +103,11 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
+    /// A registry over an explicit tool list (registration order kept).
+    pub fn from_tools(tools: Vec<Arc<dyn Tool>>) -> Self {
+        Self { tools }
+    }
+
     /// The tool registered under `name`, if any.
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.iter().find(|t| t.name() == name).cloned()
@@ -110,11 +127,30 @@ impl ToolRegistry {
     }
 }
 
-/// The registry this worker ships with.
+/// The registry this worker ships with: the default (always-on) tools only.
 pub fn default_registry() -> ToolRegistry {
     ToolRegistry {
         tools: vec![Arc::new(DownloadMedia)],
     }
+}
+
+/// The registry this process actually serves: the default tools plus the
+/// Sparehour-backed `translate_segment` tool when its `HENCH_SPAREHOUR_*`
+/// configuration is complete (off by default; a partial configuration is
+/// warned about and ignored, never half-enabled).
+pub fn registry_from_env() -> ToolRegistry {
+    let Some(cfg) = SparehourConfig::from_env() else {
+        return default_registry();
+    };
+    tracing::info!(
+        "translate_segment enabled (project={}, route={})",
+        cfg.project,
+        cfg.route
+    );
+    ToolRegistry::from_tools(vec![
+        Arc::new(DownloadMedia),
+        Arc::new(TranslateSegment::new(cfg)),
+    ])
 }
 
 pub fn mcp_success(id: &Value, result: Value) -> JsonRpcMessage {

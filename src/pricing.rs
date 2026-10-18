@@ -41,39 +41,6 @@ impl ResolvePrice for Quoter {
         .map_err(|e| contextvm_sdk::payments::errors::PaymentError::Processor(e.to_string()))?;
         let canonical = format!("{}:{}", identity.client_pubkey, identity.invocation_hash);
 
-        // Replay of a terminal call: waive the gate; the handler serves the
-        // cached result. This is the no-double-charge fast path.
-        if let Some(record) = self.store.get(&canonical) {
-            if record.status == COMPLETED || record.status == store::FAILED {
-                tracing::info!("replay of terminal job {}: {}", canonical, record.status);
-                return Ok(ResolvePriceResult::Waive { meta: None });
-            }
-            if record.status == WAITING {
-                let reason = if self.store.inflight(&canonical) {
-                    "execution already in progress for this request"
-                } else {
-                    "a previous attempt of this exact request was interrupted; change the request to retry"
-                };
-                return Ok(ResolvePriceResult::Reject {
-                    message: Some(reason.into()),
-                });
-            }
-        }
-
-        if !cfg.hours.open_now() {
-            return Ok(ResolvePriceResult::Reject {
-                message: Some("worker is outside its hours of operation".into()),
-            });
-        }
-
-        let args = params
-            .request
-            .params
-            .as_ref()
-            .and_then(|p| p.get("arguments"))
-            .cloned()
-            .unwrap_or(Value::Null);
-
         // The SDK routes a request here only after it matched a registered
         // PricedCapability ("Self-gate 3: an unpriced request is free" in
         // server_payments.rs / server_explicit_gating.rs:
@@ -95,7 +62,52 @@ impl ResolvePrice for Quoter {
             Some(tool) => tool.as_ref(),
             None => &fallback,
         };
-        match tool.quote(&cfg, &args) {
+
+        // Replay of a terminal call: waive the gate; the handler serves the
+        // cached result. This is the no-double-charge fast path.
+        if let Some(record) = self.store.get(&canonical) {
+            if record.status == COMPLETED || record.status == store::FAILED {
+                tracing::info!("replay of terminal job {}: {}", canonical, record.status);
+                return Ok(ResolvePriceResult::Waive { meta: None });
+            }
+            if record.status == WAITING {
+                if self.store.inflight(&canonical) {
+                    return Ok(ResolvePriceResult::Reject {
+                        message: Some("execution already in progress for this request".into()),
+                    });
+                }
+                if record.tool_paid() && tool.resumable() {
+                    // A paid job of a resumable tool, interrupted between
+                    // calls (restart, slow backend): the client already paid,
+                    // so re-bind instead of re-invoicing — the handler
+                    // resumes/collects the saved backend job.
+                    tracing::info!("resuming paid waiting job {canonical}");
+                    return Ok(ResolvePriceResult::Waive { meta: None });
+                }
+                return Ok(ResolvePriceResult::Reject {
+                    message: Some(
+                        "a previous attempt of this exact request was interrupted; change the request to retry"
+                            .into(),
+                    ),
+                });
+            }
+        }
+
+        if !cfg.hours.open_now() {
+            return Ok(ResolvePriceResult::Reject {
+                message: Some("worker is outside its hours of operation".into()),
+            });
+        }
+
+        let args = params
+            .request
+            .params
+            .as_ref()
+            .and_then(|p| p.get("arguments"))
+            .cloned()
+            .unwrap_or(Value::Null);
+
+        match tool.quote(&cfg, &args).await {
             QuoteDecision::Reject { message } => Ok(ResolvePriceResult::Reject {
                 message: Some(message),
             }),
@@ -117,6 +129,7 @@ impl ResolvePrice for Quoter {
                         mode,
                         client: params.client_pubkey.clone(),
                         result: None,
+                        tool_state: None,
                         updated_at: 0,
                     })
                     .map_err(|e| {
