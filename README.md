@@ -132,12 +132,6 @@ briefly unavailable backend leaves the job collectable by repeating the
 exact same call. The token is env/file-only, never logged, and only ever
 sent to the configured base URL.
 
-## Release readiness
-
-See the [cross-project release-readiness report](https://github.com/autonomica-xyz/hench/blob/main/docs/release-readiness.html)
-for observed verification and remaining production checks. Download the HTML
-file to view or print it in a browser.
-
 ## License
 
 MIT for Hench's own code (see [LICENSE](LICENSE)); the vendored ContextVM SDK
