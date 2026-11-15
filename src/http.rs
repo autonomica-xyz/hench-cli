@@ -247,6 +247,32 @@ async fn api_state(
         .as_deref()
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false));
+    // Discovered script packages for the settings checkboxes: every valid
+    // manifest under <data_dir>/scripts, enabled or not. Unknown names in
+    // cfg.enabled_scripts that don't match a discovered package are kept
+    // as-is on save (the dashboard round-trips them).
+    let script_pkgs: Vec<Value> = {
+        let dir = state.data_dir.join("scripts");
+        let mut dirs: Vec<_> = std::fs::read_dir(&dir)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        dirs.sort();
+        dirs.iter()
+            .filter_map(|d| {
+                let text = std::fs::read_to_string(d.join("manifest.json")).ok()?;
+                let m = crate::tools::script::ScriptManifest::parse(&text)?;
+                Some(json!({
+                    "name": m.name,
+                    "description": m.description,
+                }))
+            })
+            .collect()
+    };
     Ok(Json(json!({
         "running": running,
         "uptimeSecs": state.worker.lock().await.as_ref().map(|w| w.started_at.elapsed().as_secs()).unwrap_or(0),
@@ -255,6 +281,9 @@ async fn api_state(
         "pubkeyHex": state.keys.public_key().to_hex(),
         "free": state.free,
         "platforms": config::platform_names(),
+        "tools": state.tools.read().unwrap().descriptors()
+            .iter().map(|d| d["name"].as_str().unwrap_or("")).collect::<Vec<_>>(),
+        "scriptPkgs": script_pkgs,
         "config": config_json,
         "stats": {
             "earnedSats": earned_msat / 1000,
@@ -293,7 +322,12 @@ async fn api_config(
     // Persist before committing to memory: a failed save must leave the
     // running worker and the file in agreement.
     config::save(&state.data_dir, &new_cfg).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    *state.config.write().unwrap() = new_cfg;
+    *state.config.write().unwrap() = new_cfg.clone();
+    // Browser/script toggles change the served tool set: rebuild the
+    // registry (re-probes the browser binary — settings may have changed it)
+    // before the worker restart announces the new capabilities.
+    let registry = crate::tools::registry_from_config(&new_cfg, &state.data_dir).await;
+    *state.tools.write().unwrap() = registry;
     let restarted = was_running && { state.restart_worker().await.is_ok() };
     tracing::info!(
         "settings saved{}",
@@ -365,7 +399,7 @@ mod tests {
             data_dir: dir.clone(),
             free: true,
             keys: nostr_sdk::prelude::Keys::generate(),
-            tools: crate::tools::default_registry(),
+            tools: Arc::new(RwLock::new(crate::tools::default_registry())),
             config: Arc::new(RwLock::new(Config::default())),
             store: Arc::new(crate::store::JobStore::open(&dir).unwrap()),
             http: crate::state::upload_http_client(),

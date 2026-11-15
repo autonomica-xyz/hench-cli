@@ -112,6 +112,14 @@
     <div class="checks" id="allowedPlatforms"></div>
     <label>Blocked platforms</label>
     <div class="checks" id="blockedPlatforms"></div>
+    <label>Browser tools (web_fetch, web_search, page_screenshot, site_scrape)</label>
+    <div class="checks">
+      <label><input type="checkbox" id="browserToolsEnabled"> enabled (needs a Chromium binary)</label>
+    </div>
+    <label>Browser binary (blank = auto-detect; HENCH_BROWSER_BIN also works)</label>
+    <input type="text" id="browserBinary" placeholder="/usr/bin/chromium or google-chrome">
+    <label>Script tools <span style="color:var(--dim)">— scripts run with full host access; only enable ones you trust</span></label>
+    <div class="checks" id="enabledScripts"></div>
     <label>NWC wallet URI <span id="nwcState" style="color:var(--accent)"></span></label>
     <input type="password" id="nwcUri" placeholder="nostr+walletconnect://… (leave blank to keep)" autocomplete="off">
     <div style="margin-top:16px"><button id="save">Save settings</button></div>
@@ -137,6 +145,10 @@ const api = (path, opts) => fetch(path + (token ? `?token=${encodeURIComponent(t
   headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...opts });
 
 let state = null, busy = false, formDirty = false;
+// Names in cfg.enabledScripts with no discovered package (hiddenScripts) are
+// preserved on save — the server keeps unknown names too, this is belt-and-suspenders.
+let hiddenScripts = [];
+let discoveredScriptNames = new Set();
 
 function fillForm(cfg) {
   $("name").value = cfg.name || "";
@@ -157,6 +169,11 @@ function fillForm(cfg) {
   for (const [box, list] of [["allowedPlatforms", cfg.allowedPlatforms], ["blockedPlatforms", cfg.blockedPlatforms]]) {
     $(box).querySelectorAll("input").forEach(i => i.checked = (list || []).includes(i.value));
   }
+  $("browserToolsEnabled").checked = cfg.browserToolsEnabled !== false;
+  $("browserBinary").value = cfg.browserBinary || "";
+  const enabled = new Set(cfg.enabledScripts || []);
+  $("enabledScripts").querySelectorAll("input").forEach(i => i.checked = enabled.has(i.value));
+  hiddenScripts = (cfg.enabledScripts || []).filter(n => !discoveredScriptNames.has(n));
   $("nwcUri").value = "";
   $("nwcState").textContent = cfg.nwcConfigured ? "· set (send a new URI to replace)" : "· not set";
 }
@@ -177,21 +194,45 @@ function collectForm() {
       ? { type: "daily", start: $("hoursStart").value || "00:00", end: $("hoursEnd").value || "00:00" }
       : { type: "always" },
     allowedPlatforms: pluck("allowedPlatforms"), blockedPlatforms: pluck("blockedPlatforms"),
+    browserToolsEnabled: $("browserToolsEnabled").checked,
+    browserBinary: $("browserBinary").value.trim() || null,
+    enabledScripts: [...new Set([...pluck("enabledScripts"), ...hiddenScripts])],
     nwcUri: $("nwcUri").value.trim() || "",
   };
 }
 
 function render(s) {
-  if (!state) for (const box of ["allowedPlatforms", "blockedPlatforms"]) {
-    const el = $(box);
-    el.textContent = "";
-    for (const p of s.platforms || []) {
+  if (!state) {
+    for (const box of ["allowedPlatforms", "blockedPlatforms"]) {
+      const el = $(box);
+      el.textContent = "";
+      for (const p of s.platforms || []) {
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.value = p;
+        label.append(input, " " + p);
+        el.appendChild(label);
+      }
+    }
+    // Script packages discovered under <data_dir>/scripts — one checkbox each.
+    const scriptBox = $("enabledScripts");
+    scriptBox.textContent = "";
+    discoveredScriptNames = new Set();
+    for (const pkg of s.scriptPkgs || []) {
+      discoveredScriptNames.add(pkg.name);
       const label = document.createElement("label");
       const input = document.createElement("input");
       input.type = "checkbox";
-      input.value = p;
-      label.append(input, " " + p);
-      el.appendChild(label);
+      input.value = pkg.name;
+      label.append(input, ` ${pkg.name}${pkg.description ? " — " + pkg.description.slice(0, 60) : ""}`);
+      scriptBox.appendChild(label);
+    }
+    if (!(s.scriptPkgs || []).length) {
+      const span = document.createElement("span");
+      span.style.color = "var(--dim)";
+      span.textContent = "no script packages found under <data_dir>/scripts";
+      scriptBox.appendChild(span);
     }
   }
   state = s;

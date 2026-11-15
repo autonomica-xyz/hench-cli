@@ -4,7 +4,8 @@
 
 The desktop version of [Hench](https://github.com/autonomica-xyz/hench) — part
 of [autonomica.xyz](https://autonomica.xyz): a ContextVM worker that offers
-paid media downloads (yt-dlp → Blossom) over Nostr. Same wire behavior as the
+paid jobs (media downloads, real-browser web tools, user script tools) over
+Nostr. Same wire behavior as the
 Android app — announcements with the `agent=hench` tag (so the
 [hench-web](https://github.com/autonomica-xyz/hench-web) dashboard discovers
 it), CEP-8 payment gating, `payment_required` → pay → `payment_accepted` →
@@ -23,7 +24,8 @@ the SDK's regression tests.
 ## Run
 
 ```bash
-# needs: rust toolchain, yt-dlp, ffmpeg (audio transcode + video merge), deno or node (YouTube)
+# needs: rust toolchain, yt-dlp, ffmpeg (audio transcode + video merge),
+#       deno or node (YouTube), and a Chromium binary for the browser tools
 export HENCH_NWC_URI="nostr+walletconnect://…"   # from Alby Hub, nwc.link, Zeus, …
 cargo run --release
 ```
@@ -48,13 +50,15 @@ export HENCH_DASH_TOKEN=choose-a-long-token   # required for non-loopback binds
 
 Shows: worker on/off, sats earned, jobs completed/failed, uptime, recent
 jobs. Settings — the phone app's set, minus the Android-only ones (Spark
-wallet, cookie sessions, browser/script tools):
+wallet, cookie sessions):
 
 - worker name, Nostr relays, Blossom servers, yt-dlp binary
 - accept audio / accept video
 - prices: base per job, audio/video per hour, minimum billable seconds
 - hours of operation (always / daily window)
 - allowed & blocked platforms
+- browser tools toggle + browser binary path
+- script tools (checkboxes for packages discovered under `<data_dir>/scripts`)
 - NWC wallet URI (write-only)
 
 Polling preserves unsaved settings and recovers after a failed initial state
@@ -100,6 +104,58 @@ The stderr pipe is drained throughout execution while retaining only its
 last 1 KiB for errors. The artifact is uploaded to the first Blossom server
 that accepts it and returned as text + `resource_link`.
 
+### Browser tools (default on, need a Chromium binary)
+
+Four tools render pages in headless Chromium (fresh unauthenticated browser
+context per render — the desktop equivalent of the app's isolated WebView
+profile). They advertise only when `browserToolsEnabled` is on AND
+`Browser::launch` succeeds at startup; a missing binary just means they are
+not offered.
+
+- `web_fetch { url, wait_for?, timeout_secs? }` — 3 sats; returns title +
+  page text (capped at 100k chars).
+- `web_search { query, limit? }` — 3 sats; renders google.com/search and
+  returns parsed `{title,url,snippet}` results.
+- `page_screenshot { url, width?, height?, timeout_secs? }` — 5 sats;
+  viewport PNG uploaded to Blossom, returned as text + `resource_link`.
+- `site_scrape { url, max_pages? }` — 3 sats/page up to 50 pages; BFS crawl
+  staying on the landing host, seeds from robots.txt + sitemaps, delivers
+  one JSONL file on Blossom.
+
+Binary resolution order: `browserBinary` setting → `$HENCH_BROWSER_BIN` →
+`google-chrome-stable`, `google-chrome`, `chromium`, `chromium-browser` on
+PATH → chromiumoxide's own detection. URL safety is enforced before every
+render (http(s) only, no userinfo, every resolved IP must be global). Unlike
+the Android app (whose WebView intercepts every request), only the navigation
+URL is checked — subresources loaded after commit are not; on bare metal,
+prefer a container or isolated network for the worker (Umbrel/StartOS images
+already provide this).
+
+### Script tools (opt-in)
+
+A directory `<data_dir>/scripts/<name>/` containing `manifest.json` +
+`script.py` becomes one MCP tool when its manifest `name` is in
+`enabledScripts` (dashboard checkboxes, or `HENCH_SCRIPTS` env on first
+run). Manifest contract:
+
+```json
+{
+  "name": "my_tool",
+  "description": "what it does",
+  "inputSchema": { "type": "object", "required": ["q"] },
+  "priceSats": 5,
+  "output": "text",
+  "timeoutSecs": 120
+}
+```
+
+The script runs as `python3 script.py` with the JSON arguments on stdin
+(argv[1] is the output path when `output` is `"file"` — upload that file to
+Blossom; stdout is the result when `output` is `"text"`, uploaded to
+Blossom if it exceeds 100k chars). **Script tools run with full host
+access — files, network, the works. Only enable packages you trust, like
+apps.** Manifests describe; they do not confine.
+
 ### translate_segment (optional, off by default)
 
 `translate_segment { text, source, target }` — one text segment (up to
@@ -131,6 +187,28 @@ after payment returns a cached error result (no refund), while a slow or
 briefly unavailable backend leaves the job collectable by repeating the
 exact same call. The token is env/file-only, never logged, and only ever
 sent to the configured base URL.
+
+## Packaging (Umbrel / StartOS / Raspberry Pi)
+
+System dependencies beyond the Rust toolchain:
+
+- `chromium` (or `google-chrome`) — required for the browser tools;
+  `chromium` is in Debian/Raspberry Pi OS repos (`apt install chromium`)
+- `python3` — required for script tools
+- `yt-dlp`, `ffmpeg` — media downloads (existing)
+- `deno` or `node` — YouTube JS challenges (optional but recommended)
+
+Set `HENCH_BROWSER_BIN=/usr/bin/chromium` (or the dashboard's browser
+binary field) if auto-detection picks the wrong binary. On headless
+servers Chromium may need `--no-sandbox`; the engine adds it automatically
+when running as root (euid 0), which covers most containerized app-store
+installs.
+
+Scripts live at `<data_dir>/scripts/<name>/{manifest.json,script.py}` —
+create the directory structure, drop in a package, then enable it in the
+dashboard (Settings → Script tools) or via `HENCH_SCRIPTS=name1,name2` on
+first run. **Script tools run with full host access — only enable packages
+you trust.**
 
 ## License
 

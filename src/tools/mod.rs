@@ -17,10 +17,20 @@ use serde_json::Value;
 use std::sync::Arc;
 
 pub mod download_media;
+pub mod page_screenshot;
+pub mod script;
+pub mod site_scrape;
 pub mod sparehour;
+pub mod web_fetch;
+pub mod web_search;
 
 pub use download_media::DownloadMedia;
+pub use page_screenshot::PageScreenshot;
+pub use script::ScriptTools;
+pub use site_scrape::SiteScrape;
 pub use sparehour::{SparehourConfig, TranslateSegment};
+pub use web_fetch::WebFetch;
+pub use web_search::WebSearch;
 
 /// Sends a `notifications/progress` update (a status string such as
 /// "DOWNLOADING") to the requesting client mid-execution.
@@ -128,29 +138,62 @@ impl ToolRegistry {
 }
 
 /// The registry this worker ships with: the default (always-on) tools only.
+/// Used by tests; the served registry is [`registry_from_config`].
+#[allow(dead_code)]
 pub fn default_registry() -> ToolRegistry {
     ToolRegistry {
         tools: vec![Arc::new(DownloadMedia)],
     }
 }
 
-/// The registry this process actually serves: the default tools plus the
-/// Sparehour-backed `translate_segment` tool when its `HENCH_SPAREHOUR_*`
-/// configuration is complete (off by default; a partial configuration is
-/// warned about and ignored, never half-enabled).
-pub fn registry_from_env() -> ToolRegistry {
-    let Some(cfg) = SparehourConfig::from_env() else {
-        return default_registry();
-    };
-    tracing::info!(
-        "translate_segment enabled (project={}, route={})",
-        cfg.project,
-        cfg.route
-    );
-    ToolRegistry::from_tools(vec![
-        Arc::new(DownloadMedia),
-        Arc::new(TranslateSegment::new(cfg)),
-    ])
+/// Build the served registry: `download_media` always; the four Chromium
+/// browser tools when `cfg.browser_tools_enabled` AND a headless browser
+/// actually launches (probed once at startup — a missing binary or broken
+/// install just means they aren't advertised); `translate_segment` when its
+/// `HENCH_SPAREHOUR_*` env is complete; and enabled user script tools
+/// discovered under `<data_dir>/scripts`. Async because the browser probe
+/// spawns Chrome.
+pub async fn registry_from_config(cfg: &Config, data_dir: &std::path::Path) -> ToolRegistry {
+    let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(DownloadMedia)];
+
+    // Browser tools: gated by config AND a real launch probe. The probe is
+    // one Chromium spawn at startup; failure is a warn, not fatal — the
+    // worker still serves download_media + scripts.
+    if cfg.browser_tools_enabled {
+        match crate::browser::Browser::launch(cfg.browser_binary.as_deref()).await {
+            Ok(browser) => {
+                browser.shutdown().await; // probe only — don't leave Chrome running
+                tools.push(Arc::new(WebFetch));
+                tools.push(Arc::new(WebSearch));
+                tools.push(Arc::new(PageScreenshot));
+                tools.push(Arc::new(SiteScrape));
+            }
+            Err(e) => {
+                tracing::warn!("browser tools not advertised: {e:#}");
+            }
+        }
+    }
+
+    if let Some(spare) = SparehourConfig::from_env() {
+        tracing::info!(
+            "translate_segment enabled (project={}, route={})",
+            spare.project,
+            spare.route
+        );
+        tools.push(Arc::new(TranslateSegment::new(spare)));
+    }
+
+    let script_tools = ScriptTools::new(cfg.enabled_scripts.clone())
+        .discover(&data_dir.join("scripts"));
+    if !script_tools.is_empty() {
+        tracing::info!(
+            "script tools enabled: {}",
+            script_tools.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ")
+        );
+    }
+    tools.extend(script_tools);
+
+    ToolRegistry::from_tools(tools)
 }
 
 pub fn mcp_success(id: &Value, result: Value) -> JsonRpcMessage {
@@ -241,5 +284,48 @@ mod tests {
     fn registry_dispatches_by_name() {
         assert!(default_registry().get("download_media").is_some());
         assert!(default_registry().get("nope").is_none());
+    }
+
+    #[tokio::test]
+    async fn registry_from_config_without_browser_serves_download_media_only() {
+        // browser_tools_enabled=false skips the probe entirely — no Chrome
+        // spawn in tests, and the registry is honest about what it serves.
+        let dir = std::env::temp_dir().join(format!("hench-reg-{}", std::process::id()));
+        let cfg = Config {
+            browser_tools_enabled: false,
+            ..Config::default()
+        };
+        let registry = registry_from_config(&cfg, &dir).await;
+        assert!(registry.get("download_media").is_some());
+        for name in ["web_fetch", "web_search", "page_screenshot", "site_scrape"] {
+            assert!(registry.get(name).is_none(), "{name} must not be advertised");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn registry_from_config_discovers_enabled_scripts() {
+        // A manifest under <data_dir>/scripts becomes a tool only when its
+        // name is in enabled_scripts; unknown names are ignored.
+        let dir = std::env::temp_dir().join(format!("hench-reg-scripts-{}", std::process::id()));
+        let pkg = dir.join("scripts").join("hello");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("manifest.json"),
+            r#"{"name":"hello_script","description":"hi","inputSchema":{"type":"object"},"priceSats":1,"output":"text"}"#,
+        )
+        .unwrap();
+        std::fs::write(pkg.join("script.py"), "print('hi')\n").unwrap();
+
+        let cfg = Config {
+            browser_tools_enabled: false,
+            enabled_scripts: vec!["hello_script".into(), "not_installed".into()],
+            ..Config::default()
+        };
+        let registry = registry_from_config(&cfg, &dir).await;
+        assert!(registry.get("download_media").is_some());
+        assert!(registry.get("hello_script").is_some());
+        assert!(registry.get("not_installed").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

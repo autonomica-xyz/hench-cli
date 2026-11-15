@@ -47,9 +47,10 @@ nostr-sdk = { version = "0.45" }
 
 # Logging
 tracing = "0.1"
-
-# Optional MCP integration (Rust equivalent to TS @modelcontextprotocol/sdk)
-rmcp = { version = "1.8", features = ["server", "client", "macros", "transport-worker"], optional = true }
+# rmcp intentionally dropped from this vendored copy (upstream had it as an
+# optional default-on dep): nothing here uses the SDK's rmcp transports and
+# rmcp 1.x carries RUSTSEC-2026-0462 (fixed only in 3.9+). The cfg-gated
+# rmcp_transport source stays but can no longer be enabled.
 
 # LRU cache for gift-wrap (outer event id) deduplication
 # vendored: bumped 0.12 -> 0.18 (RUSTSEC-2026-0002/0253; no patch exists in 0.12.x)
@@ -63,8 +64,6 @@ tracing-subscriber = "0.3"
 tokio = { version = "1", features = ["test-util"] }
 
 [features]
-# Enable rmcp by default while keeping legacy APIs available.
-default = ["rmcp"]
-rmcp = ["dep:rmcp"]
+default = []
 ## Exposes `MockRelayPool` for use in downstream integration tests.
 test-utils = []

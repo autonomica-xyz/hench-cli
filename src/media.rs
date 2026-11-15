@@ -132,6 +132,9 @@ pub fn mime_for(path: &Path) -> &'static str {
         // translate_segment writes translation.txt; yt-dlp never produces
         // .txt, so download_media is unaffected by this arm.
         "txt" => "text/plain",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "jsonl" | "ndjson" => "application/x-ndjson",
         _ => "application/octet-stream",
     }
 }
@@ -249,6 +252,41 @@ pub struct Upload {
     pub size: u64,
 }
 
+/// The shape `tools::script`/`page_screenshot`/`site_scrape` consume from
+/// `upload_bytes`: url + hash + size + the mime it declared.
+pub type UploadedFile = Upload;
+
+/// Write `bytes` to a scratch file under `<data_dir>/jobs/` and stream it to
+/// Blossom. `mime`/`ext` name the artifact; `mime` is sent as Content-Type
+/// (it wins over `mime_for` — e.g. site_scrape's .jsonl is ndjson, not octet-stream).
+pub async fn upload_bytes(
+    ctx: &crate::tools::ToolCtx<'_>,
+    bytes: Vec<u8>,
+    mime: &str,
+    ext: &str,
+) -> anyhow::Result<UploadedFile> {
+    let dir = ctx.data_dir.join("jobs");
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| anyhow::anyhow!("job dir create failed: {e}"))?;
+    let file = dir.join(format!("blob-{}.{}", uuidish(), ext));
+    tokio::fs::write(&file, &bytes)
+        .await
+        .map_err(|e| anyhow::anyhow!("blob write failed: {e}"))?;
+    let result = blossom_upload_mime(ctx.http, &ctx.cfg.blossom, &file, mime, ctx.keys).await;
+    let _ = tokio::fs::remove_file(&file).await;
+    result.map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Cheap unique-ish file name component (pid + nanos + counter-free).
+fn uuidish() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}-{nanos}", std::process::id())
+}
+
 /// NIP-24242 upload authorization header, signed with the worker key.
 fn blossom_auth_header(server: &str, sha256_hex: &str, keys: &Keys) -> Result<String, String> {
     let domain = url::Url::parse(server)
@@ -273,10 +311,25 @@ fn blossom_auth_header(server: &str, sha256_hex: &str, keys: &Keys) -> Result<St
 }
 
 /// Stream-upload a file to the first Blossom server that accepts it.
+/// Content-Type comes from the file extension.
 pub async fn blossom_upload(
     client: &reqwest::Client,
     servers: &[String],
     file: &Path,
+    keys: &Keys,
+) -> Result<Upload, String> {
+    let mime = mime_for(file).to_string();
+    blossom_upload_mime(client, servers, file, &mime, keys).await
+}
+
+/// Same as [`blossom_upload`] but with an explicit Content-Type — for
+/// `upload_bytes` callers that already know the artifact's mime (e.g.
+/// `application/x-ndjson` for site_scrape, which `mime_for` can't derive).
+async fn blossom_upload_mime(
+    client: &reqwest::Client,
+    servers: &[String],
+    file: &Path,
+    mime: &str,
     keys: &Keys,
 ) -> Result<Upload, String> {
     let mut hasher = Sha256::new();
@@ -293,7 +346,6 @@ pub async fn blossom_upload(
     }
     let sha256_hex = hex::encode(hasher.finalize());
     let size = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let mime = mime_for(file);
 
     let mut last_err = String::from("no blossom servers configured");
     for server in servers {

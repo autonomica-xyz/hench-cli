@@ -1,19 +1,24 @@
 //! hench-cli: the Hench worker for desktop computers, with a web dashboard.
 //!
-//! Announces a ContextVM (MCP over Nostr) server with the `download_media`
-//! tool, gates calls behind CEP-8 Lightning payments (NWC wallet), runs
-//! yt-dlp, uploads results to Blossom — same wire behavior as the Android
+//! Announces a ContextVM (MCP over Nostr) server offering `download_media`
+//! plus browser tools (web_fetch, web_search, page_screenshot, site_scrape)
+//! and enabled user script tools, gates calls behind CEP-8 Lightning
+//! payments (NWC wallet), runs yt-dlp, renders pages in headless Chromium,
+//! and uploads results to Blossom — same wire behavior as the Android
 //! app. Job records persist so paid replays are answered from cache and
 //! never re-invoiced. Settings live in <data_dir>/config.json and are
 //! editable at http://127.0.0.1:8932 (see README).
+mod browser;
 mod config;
 mod http;
 mod media;
 mod nwc;
 mod pricing;
+mod sitemap;
 mod state;
 mod store;
 mod tools;
+mod url_policy;
 
 use state::AppState;
 use std::path::PathBuf;
@@ -52,6 +57,10 @@ fn load_key(data_dir: &std::path::Path) -> anyhow::Result<contextvm_sdk::signer:
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // chromiumoxide + nostr unify rustls with both crypto backends; rustls
+    // panics at first TLS use without an explicit process provider.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -78,11 +87,12 @@ async fn main() -> anyhow::Result<()> {
         // one is configured in the dashboard (or HENCH_NWC_URI on next start).
         cfg.enabled = false;
     }
+    let registry = tools::registry_from_config(&cfg, &data_dir).await;
     let state = Arc::new(AppState {
         data_dir: data_dir.clone(),
         free,
         keys,
-        tools: tools::registry_from_env(),
+        tools: Arc::new(RwLock::new(registry)),
         config: Arc::new(RwLock::new(cfg.clone())),
         store: Arc::new(store::JobStore::open(&data_dir)?),
         http: state::upload_http_client(),

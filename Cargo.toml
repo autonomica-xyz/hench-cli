@@ -10,7 +10,9 @@ license = "MIT"
 # Neither crates.io contextvm-sdk 0.2.2 (no payments module) nor a git dep
 # (repo's submodule gitlinks have no .gitmodules; cargo refuses) works from a
 # public checkout. Vendor diff vs upstream rev: lru 0.12 -> 0.18; ported to
-# nostr/nostr-sdk 0.45 (signer is ContextVmSigner; NostrSigner removed upstream).
+# nostr/nostr-sdk 0.45 (signer is ContextVmSigner; NostrSigner removed
+# upstream); rmcp optional dep dropped (unused here; rmcp 1.x carries
+# RUSTSEC-2026-0462, fixed only in 3.9+).
 contextvm-sdk = { path = "vendor/contextvm-sdk" }
 # nostr 0.45 keeps per-NIP features on `nostr` itself (only nostr-sdk dropped
 # them); NWC needs nip04/nip47 which are cfg-gated off by default.
@@ -32,6 +34,14 @@ base64 = "0.23"
 url = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# flate2 added for the site_scrape slice (sitemap .xml.gz decode); see Main's note.
+flate2 = "1"
+# chromiumoxide 0.9.x drives Chrome/Chromium via the DevTools protocol; used by
+# src/browser.rs for web_fetch / page_screenshot / site_scrape renders.
+# NOTE: 0.9 dropped the old `tokio-runtime` feature flag — tokio is a
+# mandatory dep now (async-tungstenite is built with tokio-runtime internally).
+chromiumoxide = "0.9"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [profile.release]
 strip = true

@@ -29,7 +29,9 @@ pub struct AppState {
     pub data_dir: std::path::PathBuf,
     pub free: bool,
     pub keys: Keys,
-    pub tools: tools::ToolRegistry,
+    /// Served tool registry — rebuilt on settings save (browser/script
+    /// toggles take effect without a process restart).
+    pub tools: Arc<RwLock<tools::ToolRegistry>>,
     pub config: Arc<RwLock<Config>>,
     pub store: Arc<store::JobStore>,
     pub http: reqwest::Client,
@@ -117,12 +119,12 @@ impl AppState {
                     wallet,
                     ttl_secs: PAYMENT_TTL_SECS,
                 })],
-                self.tools.priced_capabilities(&cfg),
+                self.tools.read().unwrap().priced_capabilities(&cfg),
             )
             .with_resolve_price(pricing::quoter(
                 self.config.clone(),
                 self.store.clone(),
-                self.tools.clone(),
+                self.tools.read().unwrap().clone(),
             ))
             .with_payment_ttl(Duration::from_secs(PAYMENT_TTL_SECS));
             with_server_payments(&mut transport, options)?;
@@ -143,7 +145,8 @@ impl AppState {
         let mut rx = transport
             .take_message_receiver()
             .context("receiver taken")?;
-        let _ = transport.publish_tools(self.tools.descriptors()).await;
+        let descriptors = self.tools.read().unwrap().descriptors();
+        let _ = transport.publish_tools(descriptors).await;
         let _ = transport.announce().await;
         // Announcements can race relay websocket handshakes (seen on-device in
         // the Android worker); re-announcing is idempotent.
@@ -209,11 +212,9 @@ impl AppState {
         match r.method.as_str() {
             "initialize" | "ping" => respond(mcp_success(&id, json!({}))).await,
             "tools/list" => {
-                respond(mcp_success(
-                    &id,
-                    json!({ "tools": self.tools.descriptors() }),
-                ))
-                .await
+                let descriptors = self.tools.read().unwrap().descriptors();
+                respond(mcp_success(&id, json!({ "tools": descriptors })))
+                    .await
             }
             "tools/call" => {
                 self.handle_tool_call(
@@ -252,7 +253,7 @@ impl AppState {
         };
         let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
-        let Some(tool) = self.tools.get(name) else {
+        let Some(tool) = self.tools.read().unwrap().get(name) else {
             respond(mcp_error(id, -32602, &format!("unknown tool: {name}"))).await;
             return Ok(());
         };

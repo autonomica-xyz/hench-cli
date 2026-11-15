@@ -108,6 +108,17 @@ pub struct Config {
     pub hours: Hours,
     pub nwc_uri: Option<String>,
     pub ytdlp: String,
+    /// Advertise the headless-Chromium browser tools (web_fetch,
+    /// web_search, page_screenshot, site_scrape). Default on; if no usable
+    /// browser binary is found at startup they are silently not advertised.
+    pub browser_tools_enabled: bool,
+    /// Explicit browser binary path/name; None = detect
+    /// ($HENCH_BROWSER_BIN, google-chrome-stable, google-chrome, chromium,
+    /// chromium-browser, then chromiumoxide's own detection).
+    pub browser_binary: Option<String>,
+    /// Enabled user script tools — manifest names under
+    /// `<data_dir>/scripts/<dir>/`. Strictly opt-in (Android parity).
+    pub enabled_scripts: Vec<String>,
 }
 
 impl Default for Config {
@@ -140,6 +151,9 @@ impl Default for Config {
             hours: Hours::Always,
             nwc_uri: None,
             ytdlp: "yt-dlp".into(),
+            browser_tools_enabled: true,
+            browser_binary: None,
+            enabled_scripts: vec![],
         }
     }
 }
@@ -185,11 +199,15 @@ pub fn load(data_dir: &Path, free: bool) -> Config {
         name: std::env::var("HENCH_NAME").unwrap_or_else(|_| default_name()),
         relays: env_list("HENCH_RELAYS")
             .filter(|l| !l.is_empty())
-            .unwrap_or_default(),
+            .unwrap_or_else(|| Config::default().relays),
         blossom: env_list("HENCH_BLOSSOM")
             .filter(|l| !l.is_empty())
-            .unwrap_or_default(),
+            .unwrap_or_else(|| Config::default().blossom),
         ytdlp: std::env::var("HENCH_YTDLP").unwrap_or_else(|_| "yt-dlp".into()),
+        // HENCH_BROWSER_BIN is the same env the browser engine reads on
+        // launch(None); seeding it here makes the dashboard show it.
+        browser_binary: env_parse("HENCH_BROWSER_BIN"),
+        enabled_scripts: env_list("HENCH_SCRIPTS").unwrap_or_default(),
         ..Config::default()
     };
     if let Some(v) = env_parse("HENCH_BASE_MSAT") {
@@ -275,5 +293,30 @@ pub fn validate(cfg: &Config, free: bool) -> Vec<String> {
             issues.push(format!("unknown platform '{p}'"));
         }
     }
+    // A configured browser binary must point at an existing file — a stale
+    // path would otherwise silently disable browser tools at the probe.
+    if let Some(bin) = cfg.browser_binary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if !std::path::Path::new(bin).exists() {
+            issues.push(format!("browser binary '{bin}' does not exist"));
+        }
+    }
     issues
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: first-run seeding (no config.json, no HENCH_RELAYS env)
+    /// must keep the default relay and blossom lists — an earlier
+    /// `unwrap_or_default()` left both empty and the worker couldn't start.
+    #[test]
+    fn first_run_seeding_keeps_default_relays_and_blossom() {
+        let dir = std::env::temp_dir().join(format!("hench-cfg-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = load(&dir, true);
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(!cfg.relays.is_empty(), "relays seeded empty");
+        assert!(!cfg.blossom.is_empty(), "blossom seeded empty");
+    }
 }

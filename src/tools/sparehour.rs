@@ -1364,7 +1364,18 @@ mod tests {
             eprintln!("skipping: HENCH_SPAREHOUR_URL is set in the environment");
             return;
         }
-        let registry = crate::tools::registry_from_env();
+        // registry_from_config probes the browser; disable it so this test
+        // stays hermetic and asserts only the sparehour gating.
+        let cfg = Config {
+            browser_tools_enabled: false,
+            ..Config::default()
+        };
+        let dir = std::env::temp_dir().join(format!("hench-spare-reg-{}", std::process::id()));
+        let registry = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(crate::tools::registry_from_config(&cfg, &dir));
         assert!(registry.get("translate_segment").is_none());
         assert!(registry.get("download_media").is_some());
         assert_eq!(
@@ -1373,6 +1384,7 @@ mod tests {
         );
         // default_registry itself is unchanged: download_media only.
         assert_eq!(crate::tools::default_registry().descriptors().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
