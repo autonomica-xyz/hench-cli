@@ -41,6 +41,18 @@ impl ResolvePrice for Quoter {
         .map_err(|e| contextvm_sdk::payments::errors::PaymentError::Processor(e.to_string()))?;
         let canonical = format!("{}:{}", identity.client_pubkey, identity.invocation_hash);
 
+        // Operator allowlist: configured callers (hex or npub, normalized
+        // to lowercase hex) never get invoiced — checked before the replay
+        // fast path so it also covers jobs the quoter never wrote.
+        if cfg.free_caller_pubkeys.iter().any(|entry| {
+            crate::config::normalize_pubkey(entry)
+                .map(|k| k.eq_ignore_ascii_case(&params.client_pubkey))
+                .unwrap_or(false)
+        }) {
+            tracing::info!("free caller {canonical}: payment waived");
+            return Ok(ResolvePriceResult::Waive { meta: None });
+        }
+
         // The SDK routes a request here only after it matched a registered
         // PricedCapability ("Self-gate 3: an unpriced request is free" in
         // server_payments.rs / server_explicit_gating.rs:
@@ -162,6 +174,7 @@ pub fn quoter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostr::prelude::ToBech32;
 
     #[test]
     fn quote_saturates_instead_of_wrapping() {
@@ -303,6 +316,61 @@ mod tests {
             quote_sats(&Config::default(), "audio").unwrap() * 1_000
         );
         assert_eq!(record.client, client);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn quoter_free_caller_waives_invoice() {
+        let dir = std::env::temp_dir()
+            .join(format!("hench-quoter-free-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let client = "bb".repeat(32);
+        let cfg = Config {
+            free_caller_pubkeys: vec![client.clone()],
+            ..Config::default()
+        };
+        let q = test_quoter(&dir, cfg);
+        // Same request that rejects for an unlisted caller below.
+        let mut params = price_params(Some("download_media"), "https://x.example/v", "flac");
+        params.client_pubkey = client.clone();
+        match q.resolve_price(params).await.unwrap() {
+            ResolvePriceResult::Waive { meta } => assert!(meta.is_none()),
+            other => panic!("expected waive for allowlisted caller, got {other:?}"),
+        }
+
+        // A different caller is not waived — same request falls through to
+        // the normal quote/reject path.
+        let params = price_params(Some("download_media"), "https://x.example/v", "flac");
+        match q.resolve_price(params).await.unwrap() {
+            ResolvePriceResult::Waive { .. } => {
+                panic!("unlisted caller must not be waived")
+            }
+            _ => {}
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn quoter_free_caller_accepts_npub_entry() {
+        let dir = std::env::temp_dir()
+            .join(format!("hench-quoter-npub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let client = "cc".repeat(32);
+        let npub = nostr::prelude::PublicKey::from_hex(&client)
+            .unwrap()
+            .to_bech32()
+            .unwrap();
+        let cfg = Config {
+            free_caller_pubkeys: vec![npub],
+            ..Config::default()
+        };
+        let q = test_quoter(&dir, cfg);
+        let mut params = price_params(Some("download_media"), "https://x.example/v", "flac");
+        params.client_pubkey = client;
+        match q.resolve_price(params).await.unwrap() {
+            ResolvePriceResult::Waive { meta } => assert!(meta.is_none()),
+            other => panic!("expected waive for npub-listed caller, got {other:?}"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

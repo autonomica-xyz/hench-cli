@@ -120,6 +120,8 @@
     <input type="text" id="browserBinary" placeholder="/usr/bin/chromium or google-chrome">
     <label>Script tools <span style="color:var(--dim)">— scripts run with full host access; only enable ones you trust</span></label>
     <div class="checks" id="enabledScripts"></div>
+    <label>Free callers (npub or hex, comma-separated)</label>
+    <input type="text" id="freeCallerPubkeys" placeholder="npub1… or 64-char hex">
     <label>NWC wallet URI <span id="nwcState" style="color:var(--accent)"></span></label>
     <input type="password" id="nwcUri" placeholder="nostr+walletconnect://… (leave blank to keep)" autocomplete="off">
     <div style="margin-top:16px"><button id="save">Save settings</button></div>
@@ -174,6 +176,7 @@ function fillForm(cfg) {
   const enabled = new Set(cfg.enabledScripts || []);
   $("enabledScripts").querySelectorAll("input").forEach(i => i.checked = enabled.has(i.value));
   hiddenScripts = (cfg.enabledScripts || []).filter(n => !discoveredScriptNames.has(n));
+  $("freeCallerPubkeys").value = (cfg.freeCallerPubkeys || []).join(", ");
   $("nwcUri").value = "";
   $("nwcState").textContent = cfg.nwcConfigured ? "· set (send a new URI to replace)" : "· not set";
 }
@@ -197,6 +200,7 @@ function collectForm() {
     browserToolsEnabled: $("browserToolsEnabled").checked,
     browserBinary: $("browserBinary").value.trim() || null,
     enabledScripts: [...new Set([...pluck("enabledScripts"), ...hiddenScripts])],
+    freeCallerPubkeys: $("freeCallerPubkeys").value.split(",").map(s => s.trim()).filter(Boolean),
     nwcUri: $("nwcUri").value.trim() || "",
   };
 }

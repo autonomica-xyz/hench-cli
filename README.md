@@ -60,6 +60,7 @@ wallet, cookie sessions):
 - browser tools toggle + browser binary path
 - script tools (checkboxes for packages discovered under `<data_dir>/scripts`)
 - NWC wallet URI (write-only)
+- free callers — npub or hex pubkeys (comma-separated) that are never invoiced
 
 Polling preserves unsaved settings and recovers after a failed initial state
 request. Job fields are rendered as text, never executable HTML.
@@ -90,6 +91,10 @@ correlated error; private wallet and filesystem diagnostics stay in server logs.
 Known ceiling: a crash in the seconds between *invoice issued* and
 *settlement verified* can leave a paid-but-unrecorded invoice; the retry
 gets a rejection, not a second charge.
+
+Free callers (Settings → free callers, or `HENCH_FREE_CALLERS` comma-separated
+on first run) are a deliberate operator allowlist: the payment gate is waived
+for them before the replay check, so their calls never produce invoices.
 
 ## Tool
 

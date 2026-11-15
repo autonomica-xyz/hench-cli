@@ -119,6 +119,9 @@ pub struct Config {
     /// Enabled user script tools — manifest names under
     /// `<data_dir>/scripts/<dir>/`. Strictly opt-in (Android parity).
     pub enabled_scripts: Vec<String>,
+    /// Callers (hex or npub pubkeys) whose requests are never invoiced —
+    /// the quoter waives payment for them.
+    pub free_caller_pubkeys: Vec<String>,
 }
 
 impl Default for Config {
@@ -154,6 +157,7 @@ impl Default for Config {
             browser_tools_enabled: true,
             browser_binary: None,
             enabled_scripts: vec![],
+            free_caller_pubkeys: vec![],
         }
     }
 }
@@ -177,6 +181,22 @@ fn env_list(key: &str) -> Option<Vec<String>> {
 
 fn env_parse<T: std::str::FromStr>(key: &str) -> Option<T> {
     std::env::var(key).ok().and_then(|v| v.parse().ok())
+}
+
+/// Normalize a caller pubkey to lowercase hex: accepts 64-char hex or a
+/// bech32 `npub1…`/`nprofile1…` (decoded via nostr's PublicKey parser).
+/// Anything else returns None.
+pub fn normalize_pubkey(s: &str) -> Option<String> {
+    let s = s.trim();
+    if s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Some(s.to_ascii_lowercase());
+    }
+    if s.starts_with("npub1") || s.starts_with("nprofile1") {
+        return nostr::key::PublicKey::parse(s)
+            .ok()
+            .map(|k| k.to_hex());
+    }
+    None
 }
 
 /// Load config.json, seeding from env/HENCH_* on first run. Never fails: bad
@@ -208,6 +228,7 @@ pub fn load(data_dir: &Path, free: bool) -> Config {
         // launch(None); seeding it here makes the dashboard show it.
         browser_binary: env_parse("HENCH_BROWSER_BIN"),
         enabled_scripts: env_list("HENCH_SCRIPTS").unwrap_or_default(),
+        free_caller_pubkeys: env_list("HENCH_FREE_CALLERS").unwrap_or_default(),
         ..Config::default()
     };
     if let Some(v) = env_parse("HENCH_BASE_MSAT") {
@@ -306,6 +327,7 @@ pub fn validate(cfg: &Config, free: bool) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostr::prelude::ToBech32;
 
     /// Regression: first-run seeding (no config.json, no HENCH_RELAYS env)
     /// must keep the default relay and blossom lists — an earlier
@@ -318,5 +340,28 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         assert!(!cfg.relays.is_empty(), "relays seeded empty");
         assert!(!cfg.blossom.is_empty(), "blossom seeded empty");
+    }
+
+    #[test]
+    fn normalize_pubkey_handles_hex_npub_and_garbage() {
+        // Fixed test key -> npub -> back to the same hex.
+        let hex = "aa".repeat(32);
+        let npub = nostr::key::PublicKey::from_hex(&hex)
+            .unwrap()
+            .to_bech32()
+            .unwrap();
+        assert!(npub.starts_with("npub1"));
+
+        assert_eq!(normalize_pubkey(&hex).as_deref(), Some(hex.as_str()));
+        assert_eq!(
+            normalize_pubkey(&hex.to_uppercase()).as_deref(),
+            Some(hex.as_str())
+        );
+        assert_eq!(
+            normalize_pubkey(&format!("  {npub} ")).as_deref(),
+            Some(hex.as_str())
+        );
+        assert_eq!(normalize_pubkey("not-a-key"), None);
+        assert_eq!(normalize_pubkey("npub1qqqq"), None);
     }
 }
